@@ -1,0 +1,198 @@
+---
+title: "Population Changes"
+author: "Taimur Shah"
+output:
+    pdf_document: beamer_presentation 
+    html_document: default
+classoption: "aspectratio=169"
+
+---
+
+```{r setup, message=FALSE, results='hide', echo=FALSE}
+
+knitr::opts_chunk$set(echo = FALSE)
+knitr::opts_chunk$set(warning = FALSE, message=FALSE)
+
+options(knitr.table.format = "latex")
+options(kable_styling_position = "center")
+options(kable_styling_latex_options = "scale_down")
+
+knitr::opts_chunk$set(fig.width=18, fig.height=10)
+
+library(tidyverse)
+library(ggthemes)
+library(ggrepel)
+library(plotly)
+
+usa_countydat <- read_csv("data/nhgis0001_csv/nhgis0001_ts_nominal_county.csv")
+
+usa_citydat <- read_csv("data/us-city-pop.csv") %>%
+    select(-starts_with("Rank"), -starts_with("Growth Rate")) %>%
+    rename_with(~str_remove(., " Pop")) 
+
+mexico_municipalitydat <- read_csv("data/Population by state and municipality/conjunto_de_datos/cpv_valor_00.csv")
+
+# deselect any column that starts with Rank
+# remove the Pop from column names
+# want format # city , year, population  
+
+years <- seq(1840, 2020, by=10)
+
+
+usa_city_long <- tibble(
+                city = "",
+                population = as.numeric(),
+                year = as.numeric()
+        )
+
+cntr <- 1
+for(year in years) {
+    relevant <- usa_citydat[cntr:(cntr + 1)] %>%
+        mutate(year = year) %>%
+        rename(
+               city = starts_with("City"),
+               population = !!paste(year)
+        ) 
+
+    usa_city_long <- rbind(usa_city_long, relevant)
+
+    cntr <- cntr + 2
+
+}
+
+usa_city_long %>% write_csv("data/usa-city-pop-long.csv")
+
+
+
+theme_set(theme_few())
+
+```
+
+```{r}
+
+mexico_municipalitydat %>%
+    filter(indicador == "Población total") %>%
+    select(desc_municipio) %>% unique()
+
+mexico_municipalitydat %>%
+    filter(indicador == "Población total") %>%
+    filter(unidad_medida == "Número de personas") %>%
+    filter(desc_entidad == "Sonora") %>%
+    filter(desc_municipio != "Estatal") 
+
+mexico_municipalitydat %>%
+    filter(indicador == "Población total") %>%
+    filter(unidad_medida == "Número de personas") %>%
+    filter(desc_municipio != "Estatal") %>%
+    filter(desc_entidad != "Estados Unidos Mexicanos") %>%
+    mutate(valor = as.numeric(valor)) %>%
+    group_by(desc_entidad) %>%
+    top_n(5, valor) %>%
+    ungroup() %>%
+    mutate(desc_municipio = as.factor(desc_municipio)) %>%
+    mutate(desc_municipio = fct_reorder(desc_municipio, -valor, .fun='median', .na_rm = TRUE)) %>%
+    ggplot(aes(x=año, y=valor, group=desc_municipio)) +
+    geom_line() +
+    geom_point() +
+    facet_wrap(~desc_municipio) +
+    labs(
+         title = "Top 5 Municipalities per State in Mexico",
+         x= "Year",
+         y = "Population"
+    )
+
+ggsave("imgs/top-municipalities-time.png")
+
+
+```
+
+---
+
+
+```{r}
+
+s_city <- "Detroit"
+
+p <- usa_city_long %>%
+    ggplot(aes(x=year, y=population, group=city)) +
+    geom_line(alpha=0.5) +
+    geom_point(alpha=0.5) +
+    geom_line(data = . %>% filter(startsWith(city, s_city)), color="red", size=2) +
+    geom_point(data = . %>% filter(startsWith(city, s_city)), color="red", size=3) +
+    labs(
+         title = "Population of 100 largest Cities in the United States",
+         subtitle = paste(s_city, "highlighted"),
+         x= "Year",
+         y = "Population"
+    ) +
+    scale_y_continuous(labels = scales::comma) 
+
+ggplotly(p)
+ 
+
+
+```
+
+```{r}
+
+
+top_40 <- mexico_municipalitydat %>%
+    filter(indicador == "Población total") %>%
+    filter(unidad_medida == "Número de personas") %>%
+    filter(desc_municipio != "Estatal") %>%
+    filter(desc_entidad != "Estados Unidos Mexicanos") %>%
+    mutate(valor = as.numeric(valor)) %>%
+    filter(año == 2020) %>%
+    arrange(desc(valor)) %>%
+    head(40) %>%
+    mutate(state_municip = paste(desc_entidad, desc_municipio)) %>%
+    pull(state_municip) 
+
+top_40
+
+
+p <- mexico_municipalitydat %>%
+    filter(indicador == "Población total") %>%
+    filter(unidad_medida == "Número de personas") %>%
+    filter(desc_municipio != "Estatal") %>%
+    filter(desc_entidad != "Estados Unidos Mexicanos") %>%
+    mutate(valor = as.numeric(valor)) %>%
+    mutate(state_municip = paste(desc_entidad, desc_municipio)) %>%
+    filter(state_municip %in% top_40) %>%
+    mutate(desc_municipio = as.factor(desc_municipio)) %>%
+    mutate(desc_municipio = fct_reorder(desc_municipio, -valor, .fun='median', .na_rm = TRUE)) %>%
+    ggplot(aes(x=año, y=valor, group=state_municip, color=state_municip)) +
+    geom_line(alpha = 0.5) +
+    geom_point(alpha = 0.5) +
+    geom_line(data = . %>% filter(desc_municipio == "Hermosillo"), color="red", size=2) +
+    geom_point(data = . %>% filter(desc_municipio == "Hermosillo"), color="red", size=2) +
+
+    geom_text_repel(
+                    data = . %>% 
+                        filter(año == 2020) %>% 
+                        filter(desc_municipio != "Hermosillo"), 
+                    aes(
+                       label = paste(desc_entidad, desc_municipio, sep=", ")
+                    ), 
+                    hjust="left", 
+                    nudge_x = 2,
+                    xlim = c(2020, 2030)
+    ) +
+    labs(
+         title = "Top 40 Municipalities in Mexico by Population",
+         subtitle = "Hermosillo highlighted",
+         x= "Year",
+         y = "Population"
+    ) +
+    scale_x_continuous(limits=c(1995, 2030), n.breaks = 8) +
+    scale_y_continuous(labels = scales::comma) +
+    theme(legend.position = "none") 
+
+p
+
+ggsave("imgs/top-municipalities-time-highlight.png")
+
+
+```
+
+
