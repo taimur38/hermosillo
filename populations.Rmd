@@ -24,49 +24,48 @@ library(ggthemes)
 library(ggrepel)
 library(plotly)
 
-usa_countydat <- read_csv("data/nhgis0001_csv/nhgis0001_ts_nominal_county.csv")
-
-usa_citydat <- read_csv("data/us-city-pop.csv") %>%
-    select(-starts_with("Rank"), -starts_with("Growth Rate")) %>%
-    rename_with(~str_remove(., " Pop")) 
 
 mexico_municipalitydat <- read_csv("data/Population by state and municipality/conjunto_de_datos/cpv_valor_00.csv")
-
-# deselect any column that starts with Rank
-# remove the Pop from column names
-# want format # city , year, population  
-
-years <- seq(1840, 2020, by=10)
-
-
-usa_city_long <- tibble(
-                city = "",
-                population = as.numeric(),
-                year = as.numeric()
-        )
-
-cntr <- 1
-for(year in years) {
-    relevant <- usa_citydat[cntr:(cntr + 1)] %>%
-        mutate(year = year) %>%
-        rename(
-               city = starts_with("City"),
-               population = !!paste(year)
-        ) 
-
-    usa_city_long <- rbind(usa_city_long, relevant)
-
-    cntr <- cntr + 2
-
-}
-
-usa_city_long %>% write_csv("data/usa-city-pop-long.csv")
-
+usa_city_long <- read_csv("data/usa-city-pop-long.csv")
 
 
 theme_set(theme_few())
 
 ```
+
+```{r}
+
+# this code generates the long us city populatoin dataset
+# doesnt need to be run again
+
+# usa_citydat <- read_csv("data/us-city-pop.csv") %>%
+#     select(-starts_with("Rank"), -starts_with("Growth Rate")) %>%
+#     rename_with(~str_remove(., " Pop")) 
+
+# usa_city_long <- tibble(
+#                 city = "",
+#                 population = as.numeric(),
+#                 year = as.numeric()
+#         )
+# 
+# cntr <- 1
+# for(year in years) {
+#     relevant <- usa_citydat[cntr:(cntr + 1)] %>%
+#         mutate(year = year) %>%
+#         rename(
+#                city = starts_with("City"),
+#                population = !!paste(year)
+#         ) 
+# 
+#     usa_city_long <- rbind(usa_city_long, relevant)
+# 
+#     cntr <- cntr + 2
+# 
+# }
+# 
+# usa_city_long %>% write_csv("data/usa-city-pop-long.csv")
+```
+
 
 ```{r}
 
@@ -127,9 +126,9 @@ p <- usa_city_long %>%
     ) +
     scale_y_continuous(labels = scales::comma) 
 
-ggplotly(p)
- 
+# ggplotly(p)
 
+p
 
 ```
 
@@ -194,5 +193,4 @@ ggsave("imgs/top-municipalities-time-highlight.png")
 
 
 ```
-
 
