@@ -1,0 +1,1898 @@
+---
+title: "Hermosillo Water"
+author: "Taimur Shah"
+output:
+    pdf_document: beamer_presentation 
+    html_document: default
+classoption: "aspectratio=169"
+
+---
+
+```{r setup, message=FALSE, results='hide', echo=FALSE, warning=FALSE}
+
+knitr::opts_chunk$set(echo = FALSE)
+knitr::opts_chunk$set(warning = FALSE, message=FALSE)
+
+options(knitr.table.format = "latex")
+options(kable_styling_position = "center")
+options(kable_styling_latex_options = "scale_down")
+
+knitr::opts_chunk$set(fig.width=16, fig.height=9)
+
+library(tidyverse)
+library(arrow)
+library(duckdb)
+library(haven)
+library(ggthemes)
+library(ggrepel)
+
+library(knitr)
+library(kableExtra)
+
+library(terra)
+library(tidyterra)
+
+theme_set(theme_few())
+
+con <- dbConnect(duckdb())
+
+oensus <- tbl_file(con, "data/economic-census-merged.parquet")
+
+codigos_en <- read_csv("data/codigos-all.csv") %>%
+    rename(codigo = CODIGO) %>%
+    filter(!is.na(codigo))
+
+zones <- read_dta("data/zonamet_expanded.dta") %>%
+    mutate(ZM = ifelse(ZM == "San Luis Potos\xed-Soledad", "San Luis Potos-Soledad", ZM)) 
+
+top_zones <- read_csv("data/top-zones.csv")
+
+top_zms_pop <- top_zones %>%
+    arrange(-pop) %>%
+    head(40) %>%
+    pull(codeZM)
+
+zm_grouped_water <- read_csv("data/zm_grouped_water.csv")
+
+tarifs <- read_csv("data/agua-tarifas.csv") %>%
+    mutate(
+           usodomestica = as.numeric(usodomestica),
+           usocomercial = as.numeric(usocomercial),
+           usoindustrial = as.numeric(usoindustrial)
+    )
+
+encrige <- read_csv("data/ENCRIGE2020/conjunto_de_datos/conjunto_de_datos_III_Evaluacion_de_servicios_2020/t3_4.csv", locale = locale(encoding = "latin1"))
+
+hm_code <- "26030"
+
+rcas <- read_stata('data/CE_employment_inputed_3digits.dta') 
+
+
+rcas <- rcas %>%
+    select(codeZM, ZM, codigo, starts_with('emp_')) %>%
+    pivot_longer(starts_with('emp_'), names_to = "year", values_to = "emp") %>%
+    mutate(year = as.numeric(gsub("emp_", "", year))) %>%
+    mutate(ZM = ifelse(ZM == "San Luis Potos\xed-Soledad", "San Luis Potos-Soledad", ZM)) %>%
+    group_by(year) %>%
+    mutate(total_year_emp = sum(emp, na.rm = TRUE)) %>%
+    ungroup() %>%
+    group_by(year, codeZM, ZM) %>%
+    mutate(total_zm_emp = sum(emp, na.rm = TRUE)) %>%
+    ungroup() %>%
+    group_by(year, codigo) %>%
+    mutate(
+           codigo_emp = sum(emp, na.rm = TRUE)
+    ) %>%
+    ungroup() %>%
+    mutate(
+           codigo_share = codigo_emp / total_year_emp,
+           muni_share = emp / total_zm_emp,
+
+           rca = muni_share / codigo_share
+    )
+
+```
+
+
+```{r}
+
+# here we set up some of the dataframes we will use over and over again.
+
+# First we create 
+muni_water_spend <- census %>%
+    # filter(str_length(CODIGO) == 2) %>%
+    filter(is.na(CODIGO)) %>%
+    mutate(munid = paste0(ENTIDAD, MUNICIPIO)) %>%
+    left_join(zones, by=c("munid" = "geocode"), copy=TRUE) %>%
+    group_by(year, codeZM, ZM) %>%
+    summarise(
+              water_spend = sum(as.numeric(K976A), na.rm = TRUE),
+              total_prod = sum(as.numeric(A111A), na.rm = TRUE),
+              total_estabs = sum(as.numeric(UE), na.rm = TRUE),
+              total_emps = sum(as.numeric(H000A), na.rm = TRUE),
+              total_expenditure = sum(as.numeric(A700A), na.rm = TRUE),
+              total_intermediate = sum(as.numeric(A121A), na.rm = TRUE),
+              remuneration = sum(as.numeric(J000A), na.rm = TRUE)
+    ) 
+
+muni_water_spend_3digit <- census %>%
+    filter(str_length(CODIGO) == 3) %>%
+    mutate(munid = paste0(ENTIDAD, MUNICIPIO)) %>%
+    left_join(zones, by=c("munid" = "geocode"), copy=TRUE) %>%
+    group_by(year, codeZM, ZM) %>%
+    summarise(
+              water_spend = sum(as.numeric(K976A), na.rm = TRUE),
+              total_prod = sum(as.numeric(A111A), na.rm = TRUE),
+              total_estabs = sum(as.numeric(UE), na.rm = TRUE),
+              total_emps = sum(as.numeric(H000A), na.rm = TRUE),
+              total_expenditure = sum(as.numeric(A700A), na.rm = TRUE),
+              total_intermediate = sum(as.numeric(A121A), na.rm = TRUE),
+              remuneration = sum(as.numeric(J000A), na.rm = TRUE)
+    ) 
+
+```
+
+
+
+---
+
+Censorship is an issue in the water spending variable, so we should take analysis at the codigo level with a grain of salt.
+
+```{r}
+
+muni_water_spend_3digit %>%
+    left_join(muni_water_spend, by=c("year", "codeZM", "ZM"), suffix=c("_3digit", "")) %>%
+    filter(year > 2004) %>%
+    filter(codeZM %in% top_zms_pop) %>%
+    ggplot(aes(x=log10(water_spend), y=log10(water_spend_3digit), label=ZM)) +
+    geom_abline(slope=1, intercept=0) +
+    geom_point() +
+    geom_text_repel() +
+    geom_point(data = . %>% filter(ZM == "Hermosillo"), color = "red", size=4) +
+    labs(
+         title = "Water Spend 3 digit vs overall",
+         x = "Log of Water Spend",
+         y = "Log of Water Spend at 3 Digit level"
+    ) +
+    facet_wrap(~year)
+
+ggsave("imgs/water_spend_3digit_vs_overall.png", width = 16, height = 9)
+
+
+```
+
+---
+
+TODO: Check if censorship can be attributed to Agri or not?
+
+
+---
+
+In 2019, Hermosillo's economy was spending roughly the expected amount on water for its overall level of production. 
+
+```{r}
+
+muni_water_spend %>%
+    filter(year == 2019) %>%
+    #filter(total_prod > 10000) %>%
+    filter(codeZM %in% top_zms_pop) %>%
+    ggplot(aes(x = log10(total_prod), y = log10(water_spend), label = ZM)) +
+    geom_smooth(linetype = 'dashed') +
+    geom_point() +
+    geom_point(data = . %>% filter(ZM == "Hermosillo"), color = "red", size=4) +
+    geom_text_repel() +
+    labs(
+         title = "Water spend vs Total Production, 2019",
+         x = "Total Production (log)",
+         y = "Water Spend (log)",
+         caption = "Source: INEGI Economic Census 2019"
+    )
+
+ggsave("imgs/water_spend_vs_prod.png", width = 16, height = 9)
+
+
+
+```
+
+---
+
+When looking at water spend as share of total expenditure, production or intermediate consumption, Hermosillo is not an outlier. 
+
+```{r}
+
+muni_water_spend %>%
+    mutate(
+           water_spend_share_prod = water_spend / total_prod,
+           water_spend_share_exp = water_spend / total_expenditure,
+           water_spend_share_int = water_spend / total_intermediate
+    ) %>%
+    filter(codeZM %in% top_zms_pop) %>%
+    pivot_longer(c(water_spend_share_prod, water_spend_share_exp, water_spend_share_int), names_to = "spend_type", values_to = "share") %>%
+    # pivot_longer(c(water_spend_share_exp), names_to = "spend_type", values_to = "share") %>%
+    ggplot(aes(x=year - 1, y=share)) +
+    geom_boxplot(aes(group=year)) +
+    geom_line(data = . %>% filter(ZM == "Hermosillo"), color="red") +
+    geom_point(data = . %>% filter(ZM == "Hermosillo"), color="red") +
+    geom_vline(xintercept = 2013, linetype = "dashed") +
+    scale_y_continuous(labels = scales::percent) +
+    facet_wrap(~spend_type, scales="free") +
+    labs(
+         title = "Water Spend as Share of",
+         subtitle = "Considering Top 40 Cities",
+         x = "Year",
+         y = "Share of Total Production",
+    )
+
+ggsave("imgs/water_spend_share.png", width = 16, height = 9)
+
+```
+
+---
+
+# Prices 
+
+---
+
+The price of Industrial water in Hermosillo is high
+
+```{r}
+
+tarifs %>%
+    ggplot(aes(x=year, y=usoindustrial)) +
+    geom_boxplot(aes(group=year)) +
+    geom_line(data = . %>% filter(ciudad == "Hermosillo"), color="red") +
+    geom_point(data= . %>% filter(ciudad == "Hermosillo"), color="red") +
+    geom_vline(xintercept = 2013, linetype="dashed") +
+    scale_x_continuous(n.breaks = 10) +
+    labs(
+         title = "Industrial Water Tarifs",
+         subtitle = "Hermosillo Red",
+         x = "Year",
+         y = "Industrial Tarif",
+         caption = "Source: CONAGUA"
+    )
+
+ggsave("imgs/industrial_water_tarifs.png", width = 9, height = 6)
+
+
+```
+
+---
+
+As it is for Commercial use. 
+
+```{r}
+
+tarifs %>%
+    ggplot(aes(x=year, y=usocomercial)) +
+    geom_boxplot(aes(group=year)) +
+    geom_line(data = . %>% filter(ciudad == "Hermosillo"), color="red") +
+    geom_point(data= . %>% filter(ciudad == "Hermosillo"), color="red") +
+    geom_vline(xintercept = 2013, linetype="dashed") +
+    scale_x_continuous(n.breaks = 10) +
+    labs(
+         title = "Commercial Water Tarifs",
+         subtitle = "Hermosillo Red",
+         x = "Year",
+         y = "Commercial Tarif",
+         caption = "Source: CONAGUA"
+    )
+
+ggsave("imgs/comercial_water_tarifs.png", width = 9, height = 6)
+
+```
+
+---
+
+However Domestic water prices are low to average.
+
+```{r}
+
+tarifs %>%
+    ggplot(aes(x=year, y=usodomestica)) +
+    geom_boxplot(aes(group=year)) +
+    geom_line(data = . %>% filter(ciudad == "Hermosillo"), color="red") +
+    geom_point(data= . %>% filter(ciudad == "Hermosillo"), color="red") +
+    geom_vline(xintercept = 2013, linetype="dashed") +
+    scale_x_continuous(n.breaks = 10) +
+    labs(
+         title = "Domestic Water Tarifs",
+         subtitle = "Hermosillo Red",
+         x = "Year",
+         y = "Domestic Tarif",
+         caption = "Source: CONAGUA"
+    )
+
+
+```
+
+
+---
+
+Relatively few complaints related to outages and availability. 
+
+```{r}
+
+# Idea: make these but put gdp / cap in the x axis, or water spend
+# issue would be joining encrige municipios with censo economico
+
+encrige %>%
+    filter(!is.na(`Municipios de interés`)) %>%
+    pivot_longer(cols = -c(`Entidad Federativa`, `Municipios de interés`)) %>%
+    filter(grepl("Relativos", name)) %>%
+    mutate(
+           name = str_remove(name, "Características del servicio de agua potable_"),
+           name = str_remove(name, "_Costo accesible_Relativos"),
+           name = str_remove(name, "_Relativos")
+    ) %>%
+    group_by(name) %>%
+    arrange(value) %>%
+    mutate(rank = row_number()) %>%
+    ungroup() %>%
+    ggplot(aes(x=value, y=rank, label=`Municipios de interés`)) +
+    geom_point() +
+    # geom_text_repel() +
+    geom_point(data = . %>% filter(`Municipios de interés` == "Hermosillo"), color="red", size=4) +
+    facet_wrap(~name) +
+    labs(
+         title = "Satisfaction with Water",
+         caption = "Source: ENCRIGE 2020"
+    )
+
+ggsave("imgs/satisfaction_with_water.png", width = 16, height = 9)
+
+encrige %>%
+    filter(!is.na(`Municipios de interés`)) %>%
+    pivot_longer(cols = -c(`Entidad Federativa`, `Municipios de interés`)) %>%
+    filter(grepl("Relativos", name)) %>%
+    mutate(
+           name = str_remove(name, "Características del servicio de agua potable_"),
+           name = str_remove(name, "_Costo accesible_Relativos"),
+           name = str_remove(name, "_Relativos")
+    ) %>%
+    group_by(name) %>%
+    arrange(value) %>%
+    mutate(rank = row_number()) %>%
+    ungroup() %>%
+    filter(name == "Sin desperdicio por fugas") %>%
+    ggplot(aes(x=value, y=reorder(`Municipios de interés`, rank))) +
+    geom_bar(stat="identity") +
+    geom_bar(data = . %>% filter(`Municipios de interés` == "Hermosillo"), stat="identity", fill="red") +
+    labs(
+         title = "Water Satisfaction",
+         subtitle = "No Wastage due to Leaks",
+         x = "% of Units Satisfied",
+         y = ""
+    )
+
+
+
+```
+
+---
+
+```{r}
+
+tmp <- encrige %>%
+    filter(!is.na(`Municipios de interés`)) %>%
+    pivot_longer(cols = -c(`Entidad Federativa`, `Municipios de interés`)) %>%
+    filter(grepl("Relativos", name)) %>%
+    mutate(
+           name = str_remove(name, "Características del servicio de agua potable_"),
+           name = str_remove(name, "_Costo accesible_Relativos"),
+           name = str_remove(name, "_Relativos")
+    ) %>%
+    group_by(name) %>%
+    arrange(value) %>%
+    mutate(rank = row_number()) %>%
+    ungroup()
+
+name_order <- tmp %>%
+    filter(`Municipios de interés` == "Hermosillo") %>%
+    arrange(rank) %>%
+    pull(name)
+
+tmp %>%
+    mutate(
+           name = factor(name, levels = name_order)
+    ) %>%
+    ggplot(aes(y=name, x=value)) +
+    geom_boxplot(aes(group=name)) +
+    geom_point(data = . %>% filter(`Municipios de interés` == "Hermosillo"), color="red", size=5) +
+    labs(
+         title ="Satisfaction with Water",
+         subtitle = "Hermosillo Highlighted",
+         x = "% of Units Satisfied",
+         y = "",
+         caption = "Source: ENCRIGE 2020"
+    )
+
+ggsave("imgs/satisfaction_with_water-box.png", 
+       width = 12, height = 7)
+
+```
+
+
+---
+
+
+```{r}
+
+city_water_spend <- census %>%
+    filter(str_length(CODIGO) == 3) %>%
+    mutate(munid = paste0(ENTIDAD, MUNICIPIO)) %>%
+    left_join(zones, by=c("munid" = "geocode"), copy=TRUE) %>%
+    filter(year %in% c(2009, 2014, 2019)) %>%
+    group_by(year, codeZM, ZM, CODIGO) %>%
+    summarise(
+              n_firms = sum(as.numeric(UE), na.rm = TRUE),
+              production = sum(as.numeric(A111A), na.rm = TRUE),
+              water_spend = sum(as.numeric(K976A), na.rm = TRUE),
+              intermediate_spend = sum(as.numeric(A121A), na.rm = TRUE),
+              emps = sum(as.numeric(H000A), na.rm = TRUE)
+    ) %>%
+    mutate(
+           water_spend_share = water_spend / intermediate_spend,
+           water_spend_perfirm = water_spend / n_firms
+    ) %>%
+    ungroup() %>%
+    collect() %>%
+    group_by(codeZM, ZM, CODIGO) %>%
+    arrange(year) %>%
+    mutate(
+           water_spend_growth = (water_spend - lag(water_spend))/lag(water_spend),
+           water_spend_perfirm_growth = (water_spend_perfirm - lag(water_spend_perfirm))/lag(water_spend_perfirm),
+           n_firms_growth = (n_firms - lag(n_firms))/lag(n_firms),
+           production_growth = (production - lag(production))/lag(production),
+           emp_growth = (emps - lag(emps))/lag(emps)
+    ) %>%
+    ungroup() %>%
+    left_join(codigos_en, by=c("CODIGO" = "codigo"), copy=TRUE) 
+
+```
+
+By dividing water spend in 2019 with water volume in 2022, we can estimate the effective industrial water price.
+
+```{r}
+
+city_water_spend %>%
+    filter(year == 2019) %>%
+    filter(!startsWith(CODIGO, "1")) %>%
+    filter(CODIGO != "221") %>%
+    filter(codeZM %in% top_zms_pop) %>%
+    group_by(codeZM, ZM) %>%
+    summarise(nonagri_water_spend = sum(water_spend, na.rm = TRUE)) %>%
+    left_join(zm_grouped_water) %>%
+    filter(name == "Industrial") %>%
+    ggplot(aes(x=(nonagri_water_spend / source_all), y=reorder(ZM, nonagri_water_spend/source_all))) +
+    geom_bar(stat="identity") +
+    geom_bar(data = . %>% filter(ZM == "Hermosillo"), stat="identity", fill="red") +
+    labs(
+         title = "Estimated Effective Industrial Water Price",
+         subtitle = "Industrial Water Spend divided by Industrial Water Volume",
+         x = "Pesos / Liter, Effective Average Water Price (Industrial/Non Agri Non Electric)",
+         y = "",
+         caption = "Source: INEGI Economic Census, 2019 and CONAGUA 2022"
+    )
+
+ggsave("imgs/industrial-water-price-effective-average.png", width = 16, height = 9)
+
+```
+
+---
+
+# Camels and Hippos
+
+We define water intensity in two ways. First by determining which industries are sensitive to movement in water prices and second by determining which industries require large volumes of water.
+
++ First is decided by the share of water spend in intermediate consumption, as in the previous report.
+
++ Second by the total water spend per firm in the industry.
+
+Will analyze these separately first, then look for ways to simplify the story.
+
+---
+
+We have data per industry per municipality. On both price and quantity metrics, there is a wide range across municipalities. So there is a question of how one should characterize the properties of an industry. In the following slides, I show three methods and their results. 
+
++ Look at the industry characteristic at the national level (aggregate of all municipalities).
++ Look at the median of the industry based on top 40 cities only
++ Look at the median of the industry only from cities with rca > 1.
+
+Conclusion: Method 3 makes most sense.
+
+---
+
+```{r}
+
+codigo_n <- census %>%
+     filter(year == 2019) %>%
+     filter(str_length(CODIGO) == 3) %>%
+     select(CODIGO) %>%
+     distinct() %>%
+     count() %>%
+     pull()
+
+cutoff_percentile <- 20
+cutoff_n <- ceiling(codigo_n * cutoff_percentile/100) # top 20% of codigos
+
+codigo_water_spend <- census %>%
+    filter(str_length(CODIGO) == 3) %>%
+    mutate(munid = paste0(ENTIDAD, MUNICIPIO)) %>%
+    left_join(zones, by=c("munid" = "geocode"), copy=TRUE) %>%
+    filter(codeZM %in% top_zms_pop) %>%
+    group_by(year, CODIGO) %>%
+    summarise(
+              n_firms = sum(as.numeric(UE), na.rm = TRUE),
+              water_spend = sum(as.numeric(K976A), na.rm = TRUE),
+              total_prod = sum(as.numeric(A111A), na.rm = TRUE),
+              total_intermediate = sum(as.numeric(A121A), na.rm = TRUE),
+              total_expenditure = sum(as.numeric(A700A), na.rm = TRUE),
+              total_value_add = sum(as.numeric(A131A), na.rm = TRUE),
+              total_income = sum(as.numeric(A800A), na.rm = TRUE),
+              total_emps = sum(as.numeric(UE), na.rm = TRUE),
+
+              avg_water_spend_total = median(as.numeric(K976A), na.rm = TRUE),
+              water_spend_per_firm = sum(as.numeric(K976A), na.rm=T) / sum(as.numeric(UE), na.rm=T),
+
+              avg_water_spend_per_firm = median(as.numeric(K976A) / as.numeric(UE), na.rm = TRUE),
+              mean_water_spend_per_firm = mean(as.numeric(K976A) / as.numeric(UE), na.rm = TRUE),
+
+              avg_water_spend_share = median(as.numeric(K976A) / as.numeric(A121A), na.rm = TRUE),
+              sd_water_spend_share = sd(as.numeric(K976A) / as.numeric(A121A), na.rm = TRUE)
+    ) %>%
+    collect() 
+
+```
+
+
+---
+
+Method 1: aggregate to national level and then look at industry characteristics
+
+
+```{r}
+
+codigo_water_spend %>%
+    left_join(codigos_en, by=c("CODIGO" = "codigo")) %>%
+    filter(year == 2019) %>%
+    filter(!is.na(water_spend / total_intermediate)) %>%
+    arrange(-water_spend / total_intermediate) %>%
+    head(cutoff_n) %>%
+    ggplot(aes(y=reorder(title, water_spend / total_intermediate), x=water_spend / total_intermediate)) +
+    geom_bar(stat="identity") +
+    scale_x_continuous(labels = scales::percent) +
+    labs(
+         title = "Water Spend as Share of Intermediate Consumption, 2019",
+         subtitle = paste("Top", cutoff_percentile, "% of 3-digit CODIGOs"),
+         x = "Total Water Spend / Intermediate Consumption",
+         y = ""
+    ) 
+
+```
+
+---
+
+
+```{r}
+
+codigo_water_spend %>%
+    left_join(codigos_en, by=c("CODIGO" = "codigo")) %>%
+    filter(year == 2019) %>%
+    filter(!is.na(water_spend/n_firms)) %>%
+    filter(title != "Central Banking") %>%
+    arrange(-water_spend/n_firms) %>%
+    head(20) %>%
+    ggplot(aes(y=reorder(title, water_spend/n_firms), x=water_spend/n_firms)) +
+    geom_bar(stat="identity") +
+    # geom_errorbarh(aes(xmin=avg_water_spend - sd_water_spend, xmax=avg_water_spend + sd_water_spend), height=0) +
+    #scale_x_continuous(labels = scales::percent) +
+    labs(
+         title = "Water Spend per Firm, 2019",
+         subtitle = "Top 20 3-digit CODIGOs",
+         x = "Total Water Spent / Total number of Firms",
+         y = ""
+    ) 
+
+```
+
+
+---
+
+
+Method 2: select based on median industry characteristics from top 40 major cities
+
+
+```{r}
+
+codigo_water_spend %>%
+    left_join(codigos_en, by=c("CODIGO" = "codigo")) %>%
+    filter(year == 2019) %>%
+    filter(!is.na(avg_water_spend_share)) %>%
+    arrange(-avg_water_spend_share) %>%
+    head(cutoff_n) %>%
+    ggplot(aes(y=reorder(title, avg_water_spend_share), x=avg_water_spend_share)) +
+    geom_bar(stat="identity") +
+    scale_x_continuous(labels = scales::percent) +
+    labs(
+         title = "Water Spend as Share of Intermediate Expenditure, 2019",
+         subtitle = paste("Top", cutoff_percentile, "% of 3-digit CODIGOs"),
+         x = "Median of Water Spend as Share of Intermediate across Major Cities",
+         y = ""
+    ) 
+
+```
+
+---
+
+
+```{r}
+
+codigo_water_spend %>%
+    left_join(codigos_en, by=c("CODIGO" = "codigo")) %>%
+    filter(year == 2019) %>%
+    filter(!is.na(avg_water_spend_per_firm)) %>%
+    filter(title != "Central Banking") %>%
+    arrange(-water_spend_per_firm) %>%
+    head(20) %>%
+    ggplot(aes(y=reorder(title, avg_water_spend_per_firm), x=avg_water_spend_per_firm)) +
+    geom_bar(stat="identity") +
+    # geom_errorbarh(aes(xmin=avg_water_spend - sd_water_spend, xmax=avg_water_spend + sd_water_spend), height=0) +
+    #scale_x_continuous(labels = scales::percent) +
+    labs(
+         title = "Water Spend per Firm, 2019",
+         subtitle = "Top 20 3-digit CODIGOs",
+         x = "Median of Water spend per firm across Major Cities",
+         y = ""
+    ) 
+
+```
+
+---
+
+Method 3: select based on median industry characteristics from cities with RCA > 1 in industry.
+
+```{r}
+
+codigo_water_spend_rca <- census %>%
+    filter(str_length(CODIGO) == 3) %>%
+    mutate(munid = paste0(ENTIDAD, MUNICIPIO)) %>%
+    left_join(zones, by=c("munid" = "geocode"), copy=TRUE) %>%
+    group_by(year, codeZM, ZM, CODIGO) %>%
+    summarise(
+              n_firms = sum(as.numeric(UE), na.rm = TRUE),
+              water_spend = sum(as.numeric(K976A), na.rm = TRUE),
+              total_intermediate = sum(as.numeric(A121A), na.rm = TRUE),
+
+              # extra stuff
+              total_prod = sum(as.numeric(A111A), na.rm = TRUE),
+              # total_expenditure = sum(as.numeric(A700A), na.rm = TRUE),
+              total_value_add = sum(as.numeric(A131A), na.rm = TRUE),
+              # total_income = sum(as.numeric(A800A), na.rm = TRUE),
+              total_emps = sum(as.numeric(H000A), na.rm = TRUE)
+    ) %>%
+    collect() %>%
+    left_join(rcas, by=c('year'='year', 'codeZM'='codeZM', 'ZM'='ZM', 'CODIGO'='codigo'), copy=TRUE) %>%
+    filter(rca >= 1) %>%
+    group_by(year, CODIGO) %>%
+    summarise(
+              n_firms = sum(n_firms, na.rm = TRUE),
+              water_spend = sum(water_spend, na.rm = TRUE),
+              total_intermediate = sum(total_intermediate, na.rm = TRUE),
+
+              avg_water_spend_share = median(water_spend / total_intermediate, na.rm = TRUE),
+              avg_water_spend_per_firm = median(water_spend / n_firms, na.rm = TRUE),
+
+              mean_water_spend_share = mean(water_spend / total_intermediate, na.rm = TRUE),
+              mean_water_spend_per_firm = mean(water_spend / n_firms, na.rm = TRUE)
+    ) 
+
+```
+
+```{r}
+
+codigo_water_spend_rca %>%
+    left_join(codigos_en, by=c("CODIGO" = "codigo")) %>%
+    filter(year == 2019) %>%
+    filter(!is.na(avg_water_spend_share)) %>%
+    arrange(-avg_water_spend_share) %>%
+    head(cutoff_n) %>%
+    ggplot(aes(y=reorder(title, avg_water_spend_share), x=avg_water_spend_share)) +
+    geom_bar(stat="identity") +
+    scale_x_continuous(labels = scales::percent) +
+    labs(
+         title = "Water Spend as Share of Intermediate Expenditure, 2019",
+         subtitle = paste("Top", cutoff_percentile, "% of 3-digit CODIGOs"),
+         x = "Median of Water Spend as Share of Intermediate Consumption across Cities with RCA > 1",
+         y = ""
+    ) 
+
+```
+
+---
+
+```{r}
+
+codigo_water_spend_rca %>%
+    left_join(codigos_en, by=c("CODIGO" = "codigo")) %>%
+    filter(year == 2019) %>%
+    filter(!is.na(avg_water_spend_per_firm)) %>%
+    filter(title != "Central Banking") %>%
+    arrange(-avg_water_spend_per_firm) %>%
+    head(cutoff_n) %>%
+    ggplot(aes(y=reorder(title, avg_water_spend_per_firm), x=avg_water_spend_per_firm)) +
+    geom_bar(stat="identity") +
+    labs(
+         title = "Water Spend per Firm, 2019",
+         subtitle = "Top 20 3-digit CODIGOs",
+         x = "Median of Water spend per firm across Cities with RCA > 1",
+         y = ""
+    )
+
+```
+
+---
+
+The RCA > 1 measure is not sensitive to median / mean differences (i.e. metric is stable), and is stable when aggregated to the 'national' level as well. 
+
+---
+
+
+```{r}
+
+codigo_water_spend_rca %>%
+    left_join(codigos_en, by=c("CODIGO" = "codigo")) %>%
+    filter(year == 2019) %>%
+    filter(!is.na(mean_water_spend_share)) %>%
+    arrange(-mean_water_spend_share) %>%
+    head(cutoff_n) %>%
+    ggplot(aes(y=reorder(title, mean_water_spend_share), x=mean_water_spend_share)) +
+    geom_bar(stat="identity") +
+    scale_x_continuous(labels = scales::percent) +
+    labs(
+         title = "Water Spend as Share of Intermediate Consumption, 2019",
+         subtitle = paste("Top", cutoff_percentile, "% of 3-digit CODIGOs"),
+         x = "Mean of Water Spend as Share of Intermediate Consumption across Cities with RCA > 1",
+         y = ""
+    ) 
+
+```
+
+---
+
+
+```{r}
+
+codigo_water_spend_rca %>%
+    left_join(codigos_en, by=c("CODIGO" = "codigo")) %>%
+    filter(year == 2019) %>%
+    filter(!is.na(mean_water_spend_per_firm)) %>%
+    filter(title != "Central Banking") %>%
+    arrange(-mean_water_spend_per_firm) %>%
+    head(cutoff_n) %>%
+    ggplot(aes(y=reorder(title, mean_water_spend_per_firm), x=mean_water_spend_per_firm)) +
+    geom_bar(stat="identity") +
+    labs(
+         title = "Water Spend per Firm, 2019",
+         subtitle = "Top 20 3-digit CODIGOs",
+         x = "Mean of Water spend per firm across Cities with RCA > 1",
+         y = ""
+    )
+
+```
+
+---
+
+
+```{r}
+
+codigo_water_spend_rca %>%
+    left_join(codigos_en, by=c("CODIGO" = "codigo")) %>%
+    filter(year == 2019) %>%
+    filter(!is.na(water_spend / total_intermediate)) %>%
+    arrange(-water_spend / total_intermediate) %>%
+    head(cutoff_n) %>%
+    ggplot(aes(y=reorder(title, water_spend / total_intermediate), x=water_spend / total_intermediate)) +
+    geom_bar(stat="identity") +
+    scale_x_continuous(labels = scales::percent) +
+    labs(
+         title = "Water Spend as Share of Intermediate Consumption, 2019",
+         subtitle = paste("Top", cutoff_percentile, "% of 3-digit CODIGOs with RCA > 1"),
+         x = "Total Water Spend / Intermediate Consumption",
+         y = ""
+    ) 
+
+```
+
+---
+
+
+```{r}
+
+codigo_water_spend_rca %>%
+    left_join(codigos_en, by=c("CODIGO" = "codigo")) %>%
+    filter(year == 2019) %>%
+    filter(!is.na(water_spend/n_firms)) %>%
+    filter(title != "Central Banking") %>%
+    arrange(-water_spend/n_firms) %>%
+    head(20) %>%
+    ggplot(aes(y=reorder(title, water_spend/n_firms), x=water_spend/n_firms)) +
+    geom_bar(stat="identity") +
+    labs(
+         title = "Water Spend per Firm, 2019",
+         subtitle = paste("Top", cutoff_percentile, "% of 3-digit CODIGOs with RCA > 1"),
+         x = "Total Water Spent / Total number of Firms",
+         y = ""
+    ) 
+
+```
+
+---
+
+Will conclude by using the median values of industries in places where RCA > 1. 
+
+
+---
+
+Plotting the quantity vs price indicators against each other to see the tradeoff.
+
+```{r}
+
+codigo_water_spend_rca %>%
+    filter(year == 2019) %>%
+    left_join(codigos_en, by=c("CODIGO" = "codigo")) %>%
+    filter(title != "Central Banking") %>%
+    ggplot(aes(x=log10(avg_water_spend_per_firm * 1e6), y=avg_water_spend_share, label=title)) +
+    geom_point() +
+    geom_text_repel() +
+    labs(
+         title = "Water Intensity, Price Sensitive vs Quantity Sensitive Industries",
+         x = "Log of Median Water Spend per Firm",
+         y = "Median Water Spend as Share of Intermediate Consumption",
+         caption = "Source: INEGI Economic Census 2019"
+    ) +
+    scale_y_continuous(labels = scales::percent)
+
+ggsave('imgs/water-intensive-inds-price-vs-quantity.png', width = 16, height = 9)
+
+
+```
+
+---
+
+```{r}
+
+
+med_water_spend <- codigo_water_spend_rca %>%
+    filter(year == 2019) %>%
+    left_join(codigos_en, by=c("CODIGO" = "codigo")) %>%
+    filter(title != "Central Banking") %>%
+    summarise(
+              med_qty = log10(median(avg_water_spend_per_firm * 1e6, na.rm=T)),
+              med_price = median(avg_water_spend_share, na.rm=T)
+    )
+
+codigo_water_spend_rca %>%
+    filter(year == 2019) %>%
+    left_join(codigos_en, by=c("CODIGO" = "codigo")) %>%
+    filter(title != "Central Banking") %>%
+    ggplot(aes(x=log10(avg_water_spend_per_firm * 1e6), y=avg_water_spend_share, label=title)) +
+    geom_point() +
+    geom_hline(yintercept = med_water_spend$med_price, linetype="dashed") +
+    geom_vline(xintercept = med_water_spend$med_qty, linetype="dashed") +
+    # geom_text_repel() +
+    labs(
+         title = "Water Intensity, Price Sensitive vs Quantity Sensitive Industries",
+         x = "Log of Median Water Spend per Firm",
+         y = "Median Water Spend as Share of Intermediate Consumption",
+         caption = "Source: INEGI Economic Census 2019"
+    ) +
+    scale_y_continuous(labels = scales::percent)
+
+ggsave('imgs/water-intensive-inds-price-vs-quantity-quadrants.png', width = 16, height = 9)
+
+
+```
+
+
+---
+
+Hermosillo has presence in those sensitive to water prices and quantity.  
+
+```{r}
+
+hermosillo_codigos <- rcas %>%
+    filter(year == 2019) %>%
+    filter(ZM == "Hermosillo") %>%
+    filter(rca >= 1) %>%
+    filter(emp > 50) %>%
+    pull(codigo)
+
+codigo_water_spend_rca %>%
+    filter(year == 2019) %>%
+    left_join(codigos_en, by=c("CODIGO" = "codigo")) %>%
+    filter(title != "Central Banking") %>%
+    ggplot(aes(x=log10(avg_water_spend_per_firm * 1e6), y=avg_water_spend_share, label=title)) +
+    geom_point() +
+    geom_point(data = . %>% filter(CODIGO %in% hermosillo_codigos), color="red") +
+    geom_text_repel() +
+    labs(
+         title = "Water Intensity, Price Sensitive vs Quantity Sensitive Industries",
+         subtitle = "Hermosillo Industries in Red",
+         x = "Log of Median Water Spend per Firm",
+         y = "Median Water Spend as Share of Intermediate Consumption",
+         caption = "Source: INEGI Economic Census 2019"
+    ) +
+    scale_y_continuous(labels = scales::percent)
+
+ggsave("imgs/water-intensive-inds-price-vs-quantity-hermosillo.png", width = 16, height = 9)
+
+```
+
+---
+
+How many price-sensitive industries is Hermosillo present in?
+
+```{r}
+
+price_inds <- codigo_water_spend_rca %>%
+    left_join(codigos_en, by=c("CODIGO" = "codigo")) %>%
+    filter(year == 2019) %>%
+    filter(!is.na(avg_water_spend_share)) %>%
+    arrange(-avg_water_spend_share) %>%
+    head(cutoff_n) %>%
+    pull(CODIGO)
+
+price_cutoff <- (codigo_water_spend_rca %>%
+    left_join(codigos_en, by=c("CODIGO" = "codigo")) %>%
+    filter(year == 2019) %>%
+    filter(!is.na(avg_water_spend_share)) %>%
+    arrange(-avg_water_spend_share) %>%
+    head(cutoff_n) %>%
+    arrange(avg_water_spend_share) %>%
+    pull(avg_water_spend_share))[1]
+
+codigo_water_spend_rca %>%
+    left_join(codigos_en, by=c("CODIGO" = "codigo")) %>%
+    filter(year == 2019) %>%
+    filter(!is.na(avg_water_spend_share)) %>%
+    arrange(-avg_water_spend_share) %>%
+    head(cutoff_n) %>%
+    mutate(
+           title = str_trunc(title, 50)
+    ) %>%
+    ggplot(aes(y=reorder(title, avg_water_spend_share), x=avg_water_spend_share)) +
+    geom_bar(stat="identity") +
+    geom_bar(data = . %>% filter(CODIGO %in% hermosillo_codigos), stat="identity", fill="red") +
+    scale_x_continuous(labels = scales::percent) +
+    labs(
+         title = "Water Spend as Share of Intermediate Consumption, 2019",
+         subtitle = paste("Top", cutoff_percentile, "% of 3-digit CODIGOs"),
+         x = "Median of Water Spend as Share of Intermediate Consumption across Cities with RCA > 1",
+         y = ""
+    ) 
+
+ggsave("imgs/price-sensitive-inds-herm-presence.png",
+       width = 11, height = 6)
+
+```
+
+---
+
+How many quantity-sensitive industries is Hermosillo present in?
+
+```{r}
+
+qty_inds <- codigo_water_spend_rca %>%
+    left_join(codigos_en, by=c("CODIGO" = "codigo")) %>%
+    filter(year == 2019) %>%
+    filter(!is.na(avg_water_spend_per_firm)) %>%
+    filter(title != "Central Banking") %>%
+    arrange(-avg_water_spend_per_firm) %>%
+    head(cutoff_n) %>%
+    pull(CODIGO)
+
+qty_cutoff <- (codigo_water_spend_rca %>%
+    left_join(codigos_en, by=c("CODIGO" = "codigo")) %>%
+    filter(year == 2019) %>%
+    filter(!is.na(avg_water_spend_per_firm)) %>%
+    filter(title != "Central Banking") %>%
+    arrange(-avg_water_spend_per_firm) %>%
+    head(cutoff_n) %>%
+    arrange(avg_water_spend_per_firm) %>%
+    pull(avg_water_spend_per_firm))[1]
+
+
+qty_cutoff_old <- (codigo_water_spend_rca %>%
+    left_join(codigos_en, by=c("CODIGO" = "codigo")) %>%
+    filter(year == 2014) %>%
+    filter(!is.na(avg_water_spend_per_firm)) %>%
+    filter(title != "Central Banking") %>%
+    arrange(-avg_water_spend_per_firm) %>%
+    head(cutoff_n) %>%
+    arrange(avg_water_spend_per_firm) %>%
+    pull(avg_water_spend_per_firm))[1]
+
+
+codigo_water_spend_rca %>%
+    left_join(codigos_en, by=c("CODIGO" = "codigo")) %>%
+    filter(year == 2019) %>%
+    filter(!is.na(avg_water_spend_per_firm)) %>%
+    filter(title != "Central Banking") %>%
+    arrange(-avg_water_spend_per_firm) %>%
+    head(cutoff_n) %>%
+    mutate(
+           title = str_trunc(title, 50)
+    ) %>%
+    ggplot(aes(y=reorder(title, avg_water_spend_per_firm), x=avg_water_spend_per_firm)) +
+    geom_bar(stat="identity") +
+    geom_bar(data = . %>% filter(CODIGO %in% hermosillo_codigos), stat="identity", fill="red") +
+    labs(
+         title = "Water Spend per Firm, 2019",
+         subtitle = "Top 20 3-digit CODIGOs",
+         x = "Median of Water spend per firm across Cities with RCA > 1",
+         y = ""
+    )
+
+ggsave("imgs/quantity-sensitive-inds-herm-presence.png",
+       width = 11, height = 6)
+
+```
+
+---
+
+```{r}
+
+# take each zone and filter for rca > 1 then count how many are in qty and price, plot and highlight hermosillo 
+
+
+rcas %>%
+    filter(year == 2019) %>%
+    filter(rca >= 1) %>%
+    filter(codeZM %in% top_zms_pop) %>%
+    group_by(ZM) %>%
+    summarise(
+              n_qty = sum(codigo %in% qty_inds),
+              n_price = sum(codigo %in% price_inds)
+    ) %>%
+    ggplot(aes(x=n_qty, y=n_price, label=ZM)) +
+    geom_point() +
+    geom_point(data = . %>% filter(ZM == "Hermosillo"), color="red", size=3) +
+    geom_text_repel() +
+    labs(
+         title = "Number of Water Intensive Industries with RCA > 1",
+         x = "Quantity Sensitive Industries",
+         y = "Price Sensitive Industries",
+         caption = "Own Calculations from INEGI Economic Census 2019"
+    )
+
+ggsave("imgs/price-vs-quantity-comparative-inds-herm-presence.png",
+       width = 11, height = 6)
+
+
+```
+
+
+---
+
+So we can conclude that by both measures, Hermosillo is currently 'present' in a significant number of water-sensitive industries.
+
+1. Have these industries grown over time?
+2. Have these industries 'adapted' to the high water prices or low water quantities?
+
+---
+
+
+```{r fig.height=6, fig.width=9}
+
+herm_water_spend <- city_water_spend %>%
+    filter(ZM == "Hermosillo") 
+
+codigo_water_spend_rca %>%
+    filter(year == 2019) %>%
+    left_join(
+              herm_water_spend %>%
+                  select(year, CODIGO, title, water_spend_perfirm, water_spend_share) %>%
+                  rename(
+                         herm_water_spend_perfirm = water_spend_perfirm,
+                         herm_water_spend_share = water_spend_share
+                  )
+    ) %>%
+    filter(CODIGO %in% price_inds) %>%
+    #filter(CODIGO %in% hermosillo_codigos) %>%
+    ggplot(aes(x=avg_water_spend_share, y=herm_water_spend_share, label=str_trunc(title, 50))) +
+    geom_abline(slope=1, intercept=0) +
+    geom_point() +
+    geom_point(data = . %>% filter(CODIGO %in% hermosillo_codigos), color="red", size=3) +
+    geom_vline(xintercept = price_cutoff, linetype="dashed") +
+    #geom_text_repel(data = . %>% filter(abs(herm_water_spend_share - avg_water_spend_share) > 0.02)) +
+    geom_text_repel() +
+    labs(
+         title = "Price Sensitivity: Hermosillo Adaptation to Water",
+         subtitle = "Industries in Red have RCA > 1 in Hermosillo",
+         x = "Median Water Spend as Share of Intermediate Consumption across Cities with RCA > 1",
+         y = "Hermosillo Water Spend as Share of Intermediate Consumptoin"
+    ) +
+    scale_y_continuous(labels = scales::percent) +
+    scale_x_continuous(labels = scales::percent)
+
+ggsave("imgs/price-sensitivity-herm-adaptation.png", width = 9, height = 6)
+
+```
+
+---
+
+
+```{r fig.height=6, fig.width=9}
+
+codigo_water_spend_rca %>%
+    filter(year == 2019) %>%
+    left_join(
+              herm_water_spend %>%
+                  select(year, CODIGO, title, water_spend_perfirm, water_spend_share) %>%
+                  rename(
+                         herm_water_spend_perfirm = water_spend_perfirm,
+                         herm_water_spend_share = water_spend_share
+                  )
+    ) %>%
+    #filter(CODIGO %in% hermosillo_codigos) %>%
+    filter(CODIGO %in% qty_inds) %>%
+    mutate(
+           l_avg_spend = log10(avg_water_spend_per_firm * 1e6),
+           l_herm_spend = log10(herm_water_spend_perfirm * 1e6)
+    ) %>%
+    ggplot(aes(x=l_avg_spend, y=l_herm_spend, label=str_trunc(title, 30))) +
+    geom_abline(slope=1, intercept=0) +
+    geom_point() +
+    geom_point(data = . %>% filter(CODIGO %in% hermosillo_codigos), color="red", size=3) +
+    geom_vline(xintercept = log10(qty_cutoff * 1e6), linetype="dashed") +
+    geom_text_repel(data = . %>% filter(abs(l_herm_spend - l_avg_spend) > 1)) +
+    labs(
+         title = "Quantity Sensitivity: Hermosillo Adaptation to Water",
+         subtitle = "Industries in Red have RCA > 1 in Hermosillo",
+         x = "Log Median Water Spend per Firm across Cities with RCA > 1",
+         y = "Log Hermosillo Water Spend per Firm"
+    ) 
+
+ggsave("imgs/quantity-sensitivity-herm-adaptation.png", width = 9, height = 6)
+
+```
+
+
+---
+
+
+No clear pattern emerges with respect to adaptation, either on the total amount of water spent per firm, or the share of expenditures. 
+
+---
+
+Lets see if the water intensive industries are growing in Hermosillo. We will look at growth from 2009 - 2014 and 2014-2019. 
+
+But it should be noted that when looking at growth, we are comparing across surveys, and the censorship and data quality problems may be more pronounced.
+
+---
+
+For example, some strange patterns here. 
+
+```{r}
+# price sensitivity on x, growth on y
+# overall growth in industry on x, growth in hermosillo on y, filtered by price sensitive or not..
+
+#  what do we mean by growth? employment, production, number of firms?
+
+# this will measure codigo growth on key variables over time.
+# we will also need codigo-municipality growth. 
+# one measure could be the market share that herm has in industry...
+
+
+# for 2014-2019, should i only look at people with rca > 1 in 2019?
+# for 2009-2014, should i only look at people with rca > 1 in 2014?
+
+codigo_growth <- census %>%
+    filter(str_length(CODIGO) == 3) %>%
+    mutate(munid = paste0(ENTIDAD, MUNICIPIO)) %>%
+    left_join(zones, by=c("munid" = "geocode"), copy=TRUE) %>%
+    filter(codeZM %in% top_zms_pop) %>%
+    group_by(year, CODIGO) %>%
+    summarise(
+              n_firms = sum(as.numeric(UE), na.rm = TRUE),
+              water_spend = sum(as.numeric(K976A), na.rm = TRUE),
+              total_intermediate = sum(as.numeric(A121A), na.rm = TRUE),
+
+              # extra stuff
+              total_prod = sum(as.numeric(A111A), na.rm = TRUE),
+              # total_expenditure = sum(as.numeric(A700A), na.rm = TRUE),
+              total_value_add = sum(as.numeric(A131A), na.rm = TRUE),
+              # total_income = sum(as.numeric(A800A), na.rm = TRUE),
+              total_emps = sum(as.numeric(H000A), na.rm = TRUE)
+    ) %>%
+    collect() %>%
+    group_by(CODIGO) %>%
+    arrange(year) %>%
+    mutate(
+           water_spend_growth = (water_spend - lag(water_spend))/lag(water_spend),
+           n_firms_growth = (n_firms - lag(n_firms))/lag(n_firms),
+           production_growth = (total_prod - lag(total_prod))/lag(total_prod),
+           value_add_growth = (total_value_add - lag(total_value_add))/lag(total_value_add),
+           emp_growth = (total_emps - lag(total_emps))/lag(total_emps)
+    ) %>%
+    ungroup() 
+
+codigo_growth %>%
+    filter(year %in% c(2014, 2019)) %>%
+    left_join(codigos_en, by=c("CODIGO" = "codigo")) %>%
+    ggplot(aes(y=water_spend_growth, x=emp_growth, label=title)) +
+    geom_point() +
+    geom_text_repel() +
+    labs(
+         title = "Water spend vs Employment growth",
+         subtitle = "Top 40 Mexican cities",
+         y = "Water Spend Growth",
+         x = "Employment Growth",
+         caption = "Source: INEGI Economic Census"
+    ) +
+    scale_x_continuous(labels = scales::percent) +
+    scale_y_continuous(labels = scales::percent) +
+    facet_wrap(~year)
+
+```
+
+---
+
+In particular, Manufacture of transport equipment stands out in terms of water spend growth.
+
+```{r}
+
+codigo_growth %>%
+    filter(year %in% c(2014, 2019)) %>%
+    select(year, CODIGO, water_spend) %>%
+    pivot_wider(names_from = year, values_from = water_spend) %>%
+    left_join(codigos_en, by=c("CODIGO" = "codigo")) %>%
+    ggplot(aes(x=`2014`, y=`2019`, label=title)) +
+    geom_point() +
+    geom_abline() +
+    geom_text_repel() +
+    labs(
+         title = "Water Spend Growth, 2014-2019",
+         x = "Water Spend in 2014",
+         y = "Water Spend in 2019"
+    )
+
+
+```
+
+---
+
+Driven by massive increases in Leon, Salitillo, Monterrey and Aguascalientes.
+
+```{r fig.height=6, fig.width=9}
+
+transport_codigo <- codigos_en %>%
+    filter(title == "Manufacture of transport equipment")  %>%
+    pull(codigo)
+
+census %>%
+    filter(CODIGO == transport_codigo) %>%
+    mutate(munid = paste0(ENTIDAD, MUNICIPIO)) %>%
+    left_join(zones, by=c("munid" = "geocode"), copy=TRUE) %>%
+    group_by(year, codeZM, ZM) %>%
+    summarise(
+              water_spend = sum(as.numeric(K976A), na.rm = TRUE)/sum(as.numeric(UE), na.rm = TRUE)
+    ) %>%
+    filter(codeZM %in% top_zms_pop) %>%
+    filter(year %in% c(2014, 2019)) %>%
+    collect() %>%
+    pivot_wider(names_from = year, values_from = water_spend) %>%
+    ggplot(aes(x=`2014`, y=`2019`, label=ZM)) +
+    geom_point() +
+    geom_point(data = . %>% filter(ZM == "Hermosillo"), color="red") +
+    geom_abline() +
+    geom_text_repel() +
+    labs(
+         title = "Water Spend per Firm in Manufacture of Transport Equipment",
+         subtitle = "2014-2019",
+         x = "Water Spend in 2014",
+         y = "Water Spend in 2019"
+    )
+
+ggsave("imgs/transport-water-spend.png", width = 9, height = 6)
+
+```
+
+---
+
+
+Back to the topic: have water intensive industries grown in Hermosillo?
+
+---
+
+
+```{r fig.height=6, fig.width=9}
+
+herm_water_spend %>%
+    filter(year %in% c(2014, 2019)) %>%
+    select(year, CODIGO, title, emps) %>%
+    pivot_wider(names_from=year, values_from=emps) %>%
+    ggplot(aes(x=`2014`, y=`2019`, label=title)) +
+    geom_point() +
+    geom_point(data = . %>% filter(CODIGO %in% price_inds), color="red", size=3) +
+    geom_point(data = . %>% filter(CODIGO %in% qty_inds), color="green3", size=3) +
+    geom_abline() +
+    #geom_text_repel() +
+    labs(
+         title = "Employment Growth in Hermosillo",
+         subtitle = "Price Sensitive Industries in Red, Qty sensitive in Green",
+         x = "Employment in 2014",
+         y = "Employment in 2019"
+    )
+
+ggsave('imgs/inds-water-growth-herm-emp.png', width = 9, height = 6)
+
+```
+
+---
+
+
+```{r fig.height=6, fig.width=9}
+
+
+herm_water_spend %>%
+    filter(year == 2019) %>%
+    select(year, CODIGO, title, emp_growth, production_growth, n_firms_growth) %>%
+    left_join(codigo_growth %>% 
+              filter(year == 2019) %>%
+              select(year, CODIGO, emp_growth, production_growth, n_firms_growth) %>%
+              rename(
+                     mex_emp_growth = emp_growth,
+                     mex_prod_growth = production_growth,
+                     mex_firms_growth = n_firms_growth
+              )
+    ) %>%
+    filter(CODIGO != "115") %>%
+    ggplot(aes(x=mex_emp_growth, y=emp_growth, label=str_trunc(title, 50))) +
+    geom_point(color='grey') +
+    geom_point(data = . %>% filter(CODIGO %in% price_inds), color="red") +
+    geom_point(data = . %>% filter(CODIGO %in% qty_inds), color="blue") +
+    geom_abline() +
+    #geom_text_repel() +
+    labs(
+         title = "Employment Growth, 2014-2019",
+         subtitle = "Price Sensitive Industries in Red, Qty sensitive in Blue",
+         x = "Employment Growth in Mexico",
+         y = "Employment Growth in Hermosillo"
+    )
+
+ggsave('imgs/inds-water-growth-herm-emp-mex.png', width = 9, height = 6)
+          
+```
+
+---
+
+```{r fig.height=6, fig.width=9}
+
+herm_water_spend %>%
+    filter(year == 2019) %>%
+    select(year, CODIGO, title, emp_growth, production_growth) %>%
+    left_join(codigo_growth %>% 
+              filter(year == 2019) %>%
+              select(year, CODIGO, emp_growth, production_growth) %>%
+              rename(
+                     mex_emp_growth = emp_growth,
+                     mex_prod_growth = production_growth
+              )
+    ) %>%
+    filter(CODIGO != "115") %>%
+    ggplot(aes(x=mex_prod_growth, y=production_growth, label=str_trunc(title, 50))) +
+    geom_point(color="grey") +
+    geom_point(data = . %>% filter(CODIGO %in% price_inds), color="red") +
+    geom_point(data = . %>% filter(CODIGO %in% qty_inds), color="blue") +
+    geom_abline() +
+    # geom_text_repel() +
+    labs(
+         title = "Production Growth, 2014-2019",
+         subtitle = "Price Sensitive Industries in Red, Qty sensitive in Blue",
+         x = "Production Growth in Mexico",
+         y = "Production Growth in Hermosillo"
+    )
+
+ggsave('imgs/inds-water-growth-herm-prod-mex.png', width = 9, height = 6)
+          
+```
+
+---
+
+Now looking at the growth from 2009-2014. 
+
+---
+
+
+```{r fig.height=6, fig.width=9}
+
+herm_water_spend %>%
+    filter(year %in% c(2009, 2014)) %>%
+    select(year, CODIGO, title, emps) %>%
+    pivot_wider(names_from=year, values_from=emps) %>%
+    ggplot(aes(x=`2009`, y=`2014`, label=title)) +
+    geom_point(color='grey') +
+    geom_point(data = . %>% filter(CODIGO %in% price_inds), color="red") +
+    geom_point(data = . %>% filter(CODIGO %in% qty_inds), color="blue") +
+    geom_abline() +
+    #geom_text_repel() +
+    labs(
+         title = "Employment Growth in Hermosillo",
+         subtitle = "Price Sensitive Industries in Red, Qty sensitive in Blue",
+         x = "Employment in 2009",
+         y = "Employment in 2014"
+    )
+
+ggsave('imgs/inds-water-growth-herm-emp-2009-2014.png', width = 9, height = 6)
+
+```
+
+---
+
+
+```{r fig.height=6, fig.width=9}
+
+herm_water_spend %>%
+    filter(year == 2014) %>%
+    select(year, CODIGO, title, emp_growth, production_growth) %>%
+    left_join(codigo_growth %>% 
+              filter(year == 2014) %>%
+              select(year, CODIGO, emp_growth, production_growth) %>%
+              rename(
+                     mex_emp_growth = emp_growth,
+                     mex_prod_growth = production_growth
+              )
+    ) %>%
+    filter(CODIGO != "115") %>%
+    ggplot(aes(x=mex_emp_growth, y=emp_growth, label=str_trunc(title, 50))) +
+    geom_point(color='grey') +
+    geom_point(data = . %>% filter(CODIGO %in% price_inds), color="red") +
+    geom_point(data = . %>% filter(CODIGO %in% qty_inds), color="blue") +
+    geom_abline() +
+    # geom_text_repel() +
+    labs(
+         title = "Employment Growth, 2009-2014",
+         subtitle = "Price Sensitive Industries in Red, Qty sensitive in Blue",
+         x = "Employment Growth in Mexico",
+         y = "Employment Growth in Hermosillo"
+    )
+
+ggsave('imgs/inds-water-growth-herm-mexico-emp-2009-2014.png', width = 9, height = 6)
+          
+```
+
+---
+
+
+```{r fig.height=6, fig.width=9}
+
+herm_water_spend %>%
+    filter(year == 2014) %>%
+    select(year, CODIGO, title, emp_growth, production_growth) %>%
+    left_join(codigo_growth %>% 
+              filter(year == 2014) %>%
+              select(year, CODIGO, emp_growth, production_growth) %>%
+              rename(
+                     mex_emp_growth = emp_growth,
+                     mex_prod_growth = production_growth
+              )
+    ) %>%
+    filter(CODIGO != "115") %>%
+    ggplot(aes(x=mex_prod_growth, y=production_growth, label=str_trunc(title, 50))) +
+    geom_point(color='grey') +
+    geom_point(data = . %>% filter(CODIGO %in% price_inds), color="red") +
+    geom_point(data = . %>% filter(CODIGO %in% qty_inds), color="blue") +
+    geom_abline() +
+    # geom_text_repel() +
+    labs(
+         title = "Production Growth, 2009-2014",
+         subtitle = "Price Sensitive Industries in Red, Qty sensitive in Blue",
+         x = "Production Growth in Mexico",
+         y = "Production Growth in Hermosillo"
+    )
+
+ggsave('imgs/inds-water-growth-herm-mexico-prod-2009-2014.png', width = 9, height = 6)
+
+```
+
+---
+
+
+```{r}
+
+herm_water_spend %>%
+    filter(year == 2019) %>%
+    filter(CODIGO != "115") %>%
+    ggplot(aes(x=water_spend_share, y=emp_growth, label=title)) +
+    geom_hline(yintercept = 0) +
+    geom_smooth() +
+    geom_point() +
+    geom_vline(xintercept = price_cutoff, linetype="dashed") +
+    scale_x_continuous(labels = scales::percent) +
+    scale_y_continuous(labels = scales::percent) +
+    labs(
+         title = "Water Price Sensitivity vs Employment Growth 2014-2019",
+         subtitle = "Hermosillo",
+         x = "Water Spend as a Share of Intermediate Expenditure",
+         y = "Employment Growth",
+         caption = "Source: INEGI Economic Census 2014-2019"
+    )
+
+ggsave("imgs/price-sensitivity-herm-emp-growth.png", width = 9, height = 6)
+
+```
+
+---
+
+
+```{r}
+
+herm_water_spend %>%
+    filter(year == 2019) %>%
+    filter(CODIGO != "115") %>%
+    ggplot(aes(x=water_spend_share, y=production_growth, label=title)) +
+    geom_hline(yintercept = 0) +
+    geom_smooth() +
+    geom_point() +
+    geom_vline(xintercept = price_cutoff, linetype="dashed") +
+    scale_x_continuous(labels = scales::percent) +
+    scale_y_continuous(labels = scales::percent) +
+    labs(
+         title = "Water Price Sensitivity vs Production Growth 2014-2019",
+         subtitle = "Hermosillo",
+         x = "Water Spend as a Share of Intermediate Expenditure",
+         y = "Production Growth",
+         caption = "Source: INEGI Economic Census 2014-2019"
+    )
+
+ggsave("imgs/price-sensitive-herm-prod-growth.png", width = 9, height = 6)
+
+```
+
+---
+
+
+```{r}
+
+herm_water_spend %>%
+    filter(year == 2019) %>%
+    filter(CODIGO != "115") %>%
+    ggplot(aes(x=log10(water_spend_perfirm * 1e6), y=production_growth, label=title)) +
+    geom_hline(yintercept = 0) +
+    geom_smooth() +
+    geom_point() +
+    geom_smooth() +
+    geom_vline(xintercept = log10(qty_cutoff * 1e6), linetype="dashed") +
+    scale_y_continuous(labels = scales::percent) +
+    labs(
+         title = "Water Quantity Sensitivity vs Production Growth 2014-2019",
+         subtitle = "Hermosillo",
+         x = "Log of Water Spend per Firm",
+         y = "Production Growth",
+         caption = "Source: INEGI Economic Census 2014-2019"
+    )
+
+ggsave('imgs/quantity-sensitivity-herm-prod-growth.png', width = 9, height = 6)
+
+```
+
+---
+
+
+```{r}
+
+herm_water_spend %>%
+    filter(year == 2019) %>%
+    filter(CODIGO != "115") %>%
+    ggplot(aes(x=log10(water_spend_perfirm * 1e6), y=emp_growth, label=title)) +
+    geom_hline(yintercept = 0) +
+    geom_smooth() +
+    geom_point() +
+    geom_smooth() +
+    geom_vline(xintercept = log10(qty_cutoff * 1e6), linetype="dashed") +
+    scale_y_continuous(labels = scales::percent) +
+    labs(
+         title = "Water Quantity Sensitivity vs Employment Growth 2014-2019",
+         subtitle = "Hermosillo",
+         x = "Log of Water Spend per Firm",
+         y = "Employment Growth",
+         caption = "Source: INEGI Economic Census 2014-2019"
+    )
+
+ggsave('imgs/quantity-sensitivity-herm-emp-growth.png', width = 9, height = 6)
+
+```
+
+---
+
+
+```{r}
+
+codigo_growth %>% 
+    filter(year == 2019) %>% 
+    select(year, CODIGO,  emp_growth, production_growth, n_firms_growth) %>% 
+    rename(
+           mex_emp_growth = emp_growth, 
+           mex_prod_growth = production_growth, 
+           mex_firms_growth = n_firms_growth
+    ) %>%
+    left_join(codigo_water_spend_rca, by=c("year", "CODIGO")) %>%
+    left_join(codigos_en, by=c("CODIGO" = "codigo")) %>%
+    filter(mex_prod_growth < 100) %>%
+    ggplot(aes(x=avg_water_spend_share, y=mex_prod_growth)) +
+    geom_smooth() +
+    geom_point() +
+    geom_text_repel(aes(label=title)) +
+    labs(
+         title = "Price Sensitive Industries and Growth",
+         subtitle = "Mexico",
+         x = "Median Water Spend as Share of Intermediate Expenditure (RCA > 1)",
+         y = "Production Growth",
+         caption = "Source: INEGI Economic Census 2019"
+    )
+
+```
+
+---
+
+
+```{r}
+
+codigo_growth %>% 
+    filter(year == 2019) %>% 
+    select(year, CODIGO,  emp_growth, production_growth, n_firms_growth) %>% 
+    rename(
+           mex_emp_growth = emp_growth, 
+           mex_prod_growth = production_growth, 
+           mex_firms_growth = n_firms_growth
+    ) %>%
+    left_join(codigo_water_spend_rca, by=c("year", "CODIGO")) %>%
+    left_join(codigos_en, by=c("CODIGO" = "codigo")) %>%
+    filter(mex_prod_growth < 100) %>%
+    filter(title != "Central Banking") %>%
+    ggplot(aes(x=log10(avg_water_spend_per_firm * 1e6), y=mex_prod_growth)) +
+    geom_smooth() +
+    geom_point() +
+    geom_text_repel(aes(label=title)) +
+    labs(
+         title = "Qty Sensitive Industries and Growth",
+         subtitle = "Mexico",
+         x = "Median Water Spend per Firm (RCA > 1)",
+         y = "Production Growth",
+         caption = "Source: INEGI Economic Census 2019"
+    )
+
+
+```
+
+
+---
+
+
+```{r}
+
+
+herm_water_spend %>%
+    filter(year == 2019) %>%
+    left_join(codigo_growth %>% 
+              filter(year == 2019) %>%
+              select(year, CODIGO, emp_growth, production_growth, n_firms_growth) %>%
+              rename(
+                     mex_emp_growth = emp_growth,
+                     mex_prod_growth = production_growth,
+                     mex_firms_growth = n_firms_growth
+              )
+    ) %>%
+    filter(year == 2019) %>%
+    filter(CODIGO != "115") %>%
+    ggplot(aes(x=log10(water_spend_perfirm * 1e6), y=emp_growth - mex_emp_growth, label=title)) +
+    geom_hline(yintercept = 0) +
+    geom_smooth() +
+    geom_point() +
+    geom_smooth() +
+    geom_vline(xintercept = log10(qty_cutoff * 1e6), linetype="dashed") +
+    scale_y_continuous(labels = scales::percent) +
+    labs(
+         title = "Water Quantity Sensitivity vs Employment Growth 2014-2019",
+         subtitle = "Hermosillo",
+         x = "Log of Water Spend per Firm",
+         y = "Employment Growth Relative to Mexico",
+         caption = "Source: INEGI Economic Census 2014-2019"
+    )
+
+```
+
+---
+
+
+```{r}
+
+
+herm_water_spend %>%
+    filter(year == 2019) %>%
+    left_join(codigo_growth %>% 
+              filter(year == 2019) %>%
+              select(year, CODIGO, emp_growth, production_growth, n_firms_growth) %>%
+              rename(
+                     mex_emp_growth = emp_growth,
+                     mex_prod_growth = production_growth,
+                     mex_firms_growth = n_firms_growth
+              )
+    ) %>%
+    filter(year == 2019) %>%
+    filter(CODIGO != "115") %>%
+    ggplot(aes(x=log10(water_spend_perfirm * 1e6), y=production_growth - mex_prod_growth, label=title)) +
+    geom_hline(yintercept = 0) +
+    geom_smooth() +
+    geom_point() +
+    geom_smooth() +
+    geom_vline(xintercept = log10(qty_cutoff * 1e6), linetype="dashed") +
+    scale_y_continuous(labels = scales::percent) +
+    labs(
+         title = "Water Price Sensitivity vs Employment Growth 2014-2019",
+         subtitle = "Hermosillo",
+         x = "Log of Water Spend per Firm",
+         y = "Production Growth Relative to Mexico",
+         caption = "Source: INEGI Economic Census 2014-2019"
+    )
+
+```
+
+---
+
+
+```{r}
+
+herm_water_spend %>%
+    filter(year == 2019) %>%
+    left_join(codigo_growth %>% 
+              filter(year == 2019) %>%
+              select(year, CODIGO, emp_growth, production_growth, n_firms_growth) %>%
+              rename(
+                     mex_emp_growth = emp_growth,
+                     mex_prod_growth = production_growth,
+                     mex_firms_growth = n_firms_growth
+              )
+    ) %>%
+    filter(year == 2019) %>%
+    filter(CODIGO != "115") %>%
+    ggplot(aes(x=water_spend_share, y=production_growth - mex_prod_growth, label=title)) +
+    geom_hline(yintercept = 0) +
+    geom_smooth() +
+    geom_point() +
+    geom_smooth() +
+    geom_vline(xintercept = price_cutoff, linetype="dashed") +
+    scale_y_continuous(labels = scales::percent) +
+    labs(
+         title = "Water Price Sensitivity vs Employment Growth 2014-2019",
+         subtitle = "Hermosillo",
+         x = "Water Spend as Share of Intermediate Consumption",
+         y = "Production Growth Relative to Mexico",
+         caption = "Source: INEGI Economic Census 2014-2019"
+    )
+
+
+```
+
+---
+
+
+```{r}
+
+herm_water_spend %>%
+    filter(year == 2019) %>%
+    left_join(codigo_growth %>% 
+              filter(year == 2019) %>%
+              select(year, CODIGO, emp_growth, production_growth, n_firms_growth) %>%
+              rename(
+                     mex_emp_growth = emp_growth,
+                     mex_prod_growth = production_growth,
+                     mex_firms_growth = n_firms_growth
+              )
+    ) %>%
+    filter(year == 2019) %>%
+    filter(CODIGO != "115") %>%
+    ggplot(aes(x=water_spend_share, y=emp_growth - mex_emp_growth, label=title)) +
+    geom_hline(yintercept = 0) +
+    geom_smooth() +
+    geom_point() +
+    geom_smooth() +
+    geom_vline(xintercept = price_cutoff, linetype="dashed") +
+    scale_y_continuous(labels = scales::percent) +
+    labs(
+         title = "Water Price Sensitivity vs Employment Growth 2014-2019",
+         subtitle = "Hermosillo",
+         x = "Water Spend as Share of Intermediate Consumption",
+         y = "Employment Growth Relative to Mexico",
+         caption = "Source: INEGI Economic Census 2014-2019"
+    )
+
+
+```
+
+---
+
+
+```{r}
+
+herm_water_spend %>%
+    #filter(year == 2014) %>%
+    left_join(codigo_growth %>% 
+              #filter(year == 2014) %>%
+              select(year, CODIGO, emp_growth, production_growth, n_firms_growth) %>%
+              rename(
+                     mex_emp_growth = emp_growth,
+                     mex_prod_growth = production_growth,
+                     mex_firms_growth = n_firms_growth
+              )
+    ) %>%
+    filter(year %in% c(2014, 2019)) %>%
+    #filter(CODIGO != "115") %>%
+    ggplot(aes(x=log10(water_spend_perfirm * 1e6), y=n_firms_growth , label=str_trunc(title, 50))) +
+    geom_hline(yintercept = 0) +
+    #geom_smooth() +
+    geom_point() +
+    geom_smooth(
+                aes(weight=production),
+                color='red'
+    ) +
+    #geom_text_repel() + 
+    #geom_vline(xintercept = log10(qty_cutoff * 1e6), linetype="dashed") +
+    scale_y_continuous(labels = scales::percent) +
+    labs(
+         title = "Water Quantity Sensitivity vs Firm Number Growth",
+         subtitle = "Hermosillo",
+         x = "Log of Water Spend per Firm",
+         y = "Number of Firm Growth Relative to Mexico",
+         caption = "Source: INEGI Economic Census 2014-2019"
+    ) +
+    facet_wrap(~year, ncol = 1, scales="free")
+
+ggsave('imgs/quantity-sensitivity-herm-firm-growth.png', width=9, height=12)
+
+```
+
+---
+
+```{r}
+
+herm_water_spend %>%
+    #filter(year == 2014) %>%
+    left_join(codigo_growth %>% 
+              #filter(year == 2014) %>%
+              select(year, CODIGO, emp_growth, production_growth, n_firms_growth) %>%
+              rename(
+                     mex_emp_growth = emp_growth,
+                     mex_prod_growth = production_growth,
+                     mex_firms_growth = n_firms_growth
+              )
+    ) %>%
+    filter(year %in% c(2014, 2019)) %>%
+    #filter(CODIGO != "115") %>%
+    ggplot(aes(x=water_spend_share, y=n_firms_growth, label=str_trunc(title, 50))) +
+    geom_hline(yintercept = 0) +
+    #geom_smooth() +
+    geom_point() +
+    geom_smooth(
+                aes(weight=production),
+                color='red'
+    ) +
+    #geom_text_repel() + 
+    # geom_vline(xintercept = price_cutoff, linetype="dashed") +
+    scale_y_continuous(labels = scales::percent) +
+    labs(
+         title = "Water Price Sensitivity vs Firm Number Growth",
+         subtitle = "Hermosillo",
+         x = "Water Spend as Share of Intermediate Consumption",
+         y = "Number of Firm Growth Relative to Mexico",
+         caption = "Source: INEGI Economic Census 2014-2019"
+    ) +
+    facet_wrap(~year, ncol = 1, scales="free")
+
+
+
+```
+
+

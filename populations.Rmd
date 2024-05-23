@@ -23,13 +23,90 @@ library(tidyverse)
 library(ggthemes)
 library(ggrepel)
 library(plotly)
+library(haven)
+library(broom)
+
+library(knitr)
+library(kableExtra)
 
 
 mexico_municipalitydat <- read_csv("data/Population by state and municipality/conjunto_de_datos/cpv_valor_00.csv")
 usa_city_long <- read_csv("data/usa-city-pop-long.csv")
 
+zones <- read_dta("data/zonamet_expanded.dta")
+
+zones %>%
+    filter(ZM == "Reynosa-Rio Bravo")
+
+mexico_municipalitydat %>%
+    select(indicador) %>%
+    unique() %>%
+    write_csv("indicators.csv")
+
+pop_zones <- mexico_municipalitydat %>%
+    filter(indicador == "Población total") %>%
+    filter(unidad_medida == "Número de personas") %>%
+    filter(desc_entidad != "Estados Unidos Mexicanos") %>%
+    filter(desc_municipio != "Estatal") %>%
+    mutate(geocode = paste0(cve_entidad, cve_municipio)) %>%
+    mutate(valor = as.numeric(valor)) %>%
+    left_join(zones, by="geocode") 
+
+
+active_population <- mexico_municipalitydat %>%
+    filter(indicador == "Porcentaje de población de 12 años y más económicamente activa") %>%
+    filter(desc_entidad != "Estados Unidos Mexicanos") %>%
+    filter(desc_municipio != "Estatal") %>%
+    mutate(geocode = paste0(cve_entidad, cve_municipio)) %>%
+    mutate(valor = as.numeric(valor)) %>%
+    left_join(zones, by="geocode") %>%
+    rename(percent_active = valor)
+
+occupied_active_population <- mexico_municipalitydat %>%
+    filter(indicador == "Porcentaje de la población de 12 años y más económicamente activa ocupada") %>%
+    filter(desc_entidad != "Estados Unidos Mexicanos") %>%
+    filter(desc_municipio != "Estatal") %>%
+    mutate(geocode = paste0(cve_entidad, cve_municipio)) %>%
+    mutate(valor = as.numeric(valor)) %>%
+    left_join(zones, by="geocode") %>%
+    rename(percent_active_occupied = valor)
+
+occupied_active_population %>%
+    select(año) %>%
+    unique()
+
+active_population %>%
+    left_join(pop_zones, by=c("geocode", "año")) %>%
+    left_join(occupied_active_population, by=c("geocode", "año")) %>%
+    mutate(
+           active_pop = percent_active * valor,
+           occupied_pop = percent_active_occupied * active_pop
+    ) %>%
+    select(geocode, año, desc_municipio, valor, percent_active, percent_active_occupied, active_pop, occupied_pop) %>%
+    select(año) %>%
+
+zone_pops <- pop_zones %>%
+    group_by(codeZM, ZM, año) %>%
+    summarise(
+              pop = sum(valor, na.rm = T)
+    ) %>%
+    mutate(ZM = ifelse(ZM == "San Luis Potos\xed-Soledad", "San Luis Potos-Soledad", ZM)) %>%
+    mutate(codeZM = as.factor(codeZM)) %>%
+    ungroup() %>%
+    group_by(año) %>%
+    arrange(-pop) %>%
+    mutate(
+           rank = row_number(),
+           l_rank = log10(rank),
+           l_pop = log10(pop)
+    ) %>%
+    ungroup()
+
+zone_pops %>%
+    write_csv('data/zone_pops.csv')
 
 theme_set(theme_few())
+
 
 ```
 
@@ -71,16 +148,6 @@ theme_set(theme_few())
 
 mexico_municipalitydat %>%
     filter(indicador == "Población total") %>%
-    select(desc_municipio) %>% unique()
-
-mexico_municipalitydat %>%
-    filter(indicador == "Población total") %>%
-    filter(unidad_medida == "Número de personas") %>%
-    filter(desc_entidad == "Sonora") %>%
-    filter(desc_municipio != "Estatal") 
-
-mexico_municipalitydat %>%
-    filter(indicador == "Población total") %>%
     filter(unidad_medida == "Número de personas") %>%
     filter(desc_municipio != "Estatal") %>%
     filter(desc_entidad != "Estados Unidos Mexicanos") %>%
@@ -110,7 +177,7 @@ ggsave("imgs/top-municipalities-time.png")
 
 ```{r}
 
-s_city <- "Detroit"
+s_city <- "Cleveland"
 
 p <- usa_city_long %>%
     ggplot(aes(x=year, y=population, group=city)) +
@@ -131,6 +198,19 @@ p <- usa_city_long %>%
 p
 
 ```
+
+```{r}
+
+usa_city_long %>%
+    pivot_wider(names_from="year", values_from="population") %>%
+    arrange(desc(`2020`)) %>%
+    kable(
+          format.args = list(big.mark = ",")
+    ) %>%
+    kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"), full_width = F)
+
+```
+
 
 ```{r}
 
@@ -189,8 +269,580 @@ p <- mexico_municipalitydat %>%
 
 p
 
-ggsave("imgs/top-municipalities-time-highlight.png")
+ggsave("imgs/top-municipalities-time-highlight.png", height=9, width=16)
 
+
+```
+
+---
+
+```{r}
+
+pop_zones <- mexico_municipalitydat %>%
+    filter(indicador == "Población total") %>%
+    filter(unidad_medida == "Número de personas") %>%
+    filter(desc_entidad != "Estados Unidos Mexicanos") %>%
+    filter(desc_municipio != "Estatal") %>%
+    mutate(geocode = paste0(cve_entidad, cve_municipio)) %>%
+    mutate(valor = as.numeric(valor)) %>%
+    left_join(zones, by="geocode") 
+
+
+top_zones <- pop_zones %>%
+    filter(!is.na(ZM)) %>%
+    filter(año == 2020) %>%
+    group_by(codeZM, ZM, año) %>%
+    summarise(
+              pop = sum(valor, na.rm = T)
+    ) %>%
+    arrange(desc(pop))
+
+top_zones %>%
+    write_csv("data/top-zones.csv")
+
+tippy <- top_zones %>%
+    head(40) %>%
+    pull(ZM)
+
+unique(pop_zones$año)
+
+top_zones2 <- pop_zones %>%
+    filter(!is.na(ZM)) %>%
+    filter(año == 1995) %>%
+    group_by(codeZM, ZM, año) %>%
+    summarise(
+              pop = sum(valor, na.rm = T)
+    ) %>%
+    arrange(desc(pop))
+
+toppy <- top_zones %>%
+    head(40) %>%
+    pull(ZM)
+
+
+pop_zones %>%
+    filter(ZM %in% tippy) %>%
+    group_by(codeZM, ZM, año) %>%
+    summarise(
+              pop = sum(valor, na.rm = T)
+    ) %>%
+    mutate(ZM = ifelse(ZM == "San Luis Potos\xed-Soledad", "San Luis Potos-Soledad", ZM)) %>%
+    mutate(codeZM = as.factor(codeZM)) %>%
+    filter(ZM != "Valle de Mexico") %>%
+    ggplot(aes(x=año, y=pop, group=codeZM, color=codeZM)) +
+    geom_line(alpha=0.5) +
+    geom_point(alpha=0.5) +
+    geom_line(data = . %>% filter(ZM == "Hermosillo"), color="red", size=2) +
+    geom_point(data = . %>% filter(ZM == "Hermosillo"), color="red", size=2) +
+    geom_text_repel(
+                    data = . %>% 
+                        filter(año == 2020) %>% 
+                        filter(ZM != "Hermosillo"), 
+                    aes(
+                       label = ZM, #paste(desc_entidad, desc_municipio, sep=", ")
+                    ), 
+                    hjust="left", 
+                    nudge_x = 2,
+                    xlim = c(2020, 2030)
+    ) +
+    labs(
+         title = "Top 40 Commuting Zones in Mexico by Population",
+         subtitle = "Hermosillo highlighted",
+         x= "Year",
+         y = "Population"
+    ) +
+    scale_x_continuous(limits=c(1995, 2025), n.breaks = 8) +
+    scale_y_continuous(labels = scales::comma) +
+    theme(legend.position = "none") 
+
+ggsave("imgs/top-zones-time-highlight.png", height=9, width=16)
+
+```
+
+---
+
+```{r}
+
+pop_zones %>%
+    filter(ZM %in% tippy) %>%
+    group_by(codeZM, ZM, año) %>%
+    summarise(
+              pop = sum(valor, na.rm = T)
+    ) %>%
+    mutate(ZM = ifelse(ZM == "San Luis Potos\xed-Soledad", "San Luis Potos-Soledad", ZM)) %>%
+    mutate(codeZM = as.factor(codeZM)) %>%
+    pivot_wider(names_from="año", values_from="pop") %>%
+    arrange(desc(`2020`)) %>%
+    # give the numbers commas
+    kable(
+          format.args = list(big.mark = ",")
+    ) %>%
+    kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"), full_width = F) 
+
+```
+
+---
+
+
+```{r}
+
+alphas <- zone_pops %>%
+    filter(l_rank < log10(40-7)) %>%
+    group_by(año) %>%
+    summarise(
+           popmin = min(pop),
+           n_cities = n(),
+           alpha = n_cities * sum(log(pop / popmin)) ^ -1
+    )
+
+alpha2 <- zone_pops %>%
+    filter(l_rank < log10(40-7)) %>%
+    group_by(año) %>%
+    group_modify(~tidy(lm(l_rank ~ l_pop, data=.x)))
+
+alpha2 %>%
+    filter(term == "l_pop") %>%
+    ggplot(aes(x=año, y=estimate)) +
+    #geom_line() +
+    geom_hline(yintercept=-1, linetype="dashed") +
+    geom_point() +
+    geom_segment(aes(xend=año, yend=estimate + std.error, x=año, y=estimate - std.error)) +
+    labs(
+         title = "Zipf's Alpha in Mexico",
+         x = "Year",
+         y = "Zipf's Alpha"
+    )
+
+
+zone_pops %>%
+    filter(l_rank < log10(40 - 7)) %>%
+    ggplot(aes(x=l_pop, y=l_rank, label=ZM)) +
+    geom_point() +
+    geom_point(data = . %>% filter(ZM == "Hermosillo"), color="red", size=2) +
+    geom_smooth(method="lm", se=F) +
+    geom_label(data = alphas, aes(x=6, y=0, group=año, label=round(alpha, 2))) +
+    facet_wrap(~año) 
+
+ggsave("imgs/zipf-pop-zone.png", height=6, width=9)
+
+```
+
+---
+
+
+```{r}
+
+alphas %>%
+    ggplot(aes(x=año, y=alpha)) +
+    geom_line() +
+    geom_point() +
+    geom_rect(
+              xmin = -Inf, xmax = Inf,
+              ymin = 1.0, ymax = 1.2,
+              alpha = 0.2
+    ) +
+    labs(
+         title = "Zipf's Law in Mexico",
+         x = "Year",
+         y = "Zipf's Alpha"
+    ) 
+
+ggsave("imgs/zipf-alpha-time.png", height=6, width=9)
+
+```
+
+
+---
+
+```{r}
+
+mexico_cagrs <- pop_zones %>%
+    group_by(codeZM, ZM, año) %>%
+    summarise(
+              pop = sum(valor, na.rm = T)
+    ) %>%
+    mutate(ZM = ifelse(ZM == "San Luis Potos\xed-Soledad", "San Luis Potos-Soledad", ZM)) %>%
+    mutate(codeZM = as.factor(codeZM)) %>%
+    pivot_wider(names_from="año", values_from="pop") %>%
+    mutate(
+           cagr = (`2020` / `1995`) ^ (1 / 25) - 1
+    ) %>%
+    ungroup()
+
+mexico_cagrs %>% 
+    filter(ZM %in% tippy) %>%
+    ggplot(aes(x=`1995` / 1e6, y=`cagr`, label=ZM)) +
+    geom_point() +
+    geom_text_repel() +
+    geom_point(data = . %>% filter(ZM == "Hermosillo"), color="red", size=2) +
+    labs(
+         title = "Population Growth and Size of Commuting Zones in Mexico",
+         x = "Population in 1995 (Millions)",
+         y = "CAGR 1995-2020"
+    ) +
+    scale_x_continuous(labels = scales::comma) +
+    scale_y_continuous(labels = scales::percent)
+
+    ggsave("imgs/pop-zone-cagr.png", height=8, width=12)
+
+```
+
+---
+
+```{r}
+
+msa_cagrs <- read_csv("data/usa-pop/msa_cagrs.csv") %>% 
+    mutate(
+           msa_name_short = str_remove(msa_name, ",.*"),
+           msa_name_short = str_remove(msa_name_short, "-.*")
+    )
+
+
+usa_cagrs <- usa_city_long %>%
+    filter(year >= 1990) %>%
+    pivot_wider(names_from="year", values_from="population") %>%
+    mutate(
+           cagr = (`2020` / `1990`) ^ (1 / 30) - 1
+    ) %>%
+    arrange(-cagr)
+
+usa_cagrs %>%
+    ggplot(aes(x=`2020` / 1e6, y=cagr, label=city)) +
+    geom_point() +
+    geom_text_repel() +
+    scale_x_continuous(labels = scales::comma) +
+    scale_y_continuous(labels = scales::percent) +
+    labs(
+         title = "Population Growth and Size of Cities in the United States",
+         x = "Population in 2020 (Millions)",
+         y = "CAGR 1990-2020"
+    )
+
+ggsave("imgs/cagr-pop-usa.png", height=8, width=12)
+
+
+usa_cagrs %>%
+    ggplot(aes(x=`2020` / 1e6, y=cagr, label=city)) +
+    geom_point() +
+    geom_point(data = . %>% filter(city == "Cleveland, OH"), color="red", size=2) +
+    geom_text_repel() +
+    scale_x_continuous(labels = scales::comma) +
+    scale_y_continuous(labels = scales::percent) +
+    labs(
+         title = "Population Growth and Size of Cities in the United States",
+         x = "Population in 2020 (Millions)",
+         y = "CAGR 1990-2020"
+    )
+
+ggsave("imgs/cagr-pop-usa-cleveland.png", height=8, width=12)
+
+usa_cagrs %>%
+    ggplot(aes(x=`2020` / 1e6, y=cagr, label=city)) +
+    geom_point() +
+    geom_point(data = . %>% filter(city == "Baltimore, MD"), color="red", size=2) +
+    geom_text_repel() +
+    scale_x_continuous(labels = scales::comma) +
+    scale_y_continuous(labels = scales::percent) +
+    labs(
+         title = "Population Growth and Size of Cities in the United States",
+         x = "Population in 2020 (Millions)",
+         y = "CAGR 1990-2020"
+    )
+
+ggsave("imgs/cagr-pop-usa-balitmore.png", height=8, width=12)
+
+
+msa_cagrs %>%
+    rename(
+           city = msa_name_short,
+           `1990` = pop_1990,
+           `2020` = pop_2020
+    ) %>%
+    select(city, `1990`, `2020`, cagr) %>%
+    mutate(country = "USA") %>%
+    arrange(-`2020`) %>%
+    head(40) %>%
+    rbind(mexico_cagrs %>% filter(ZM %in% tippy) %>% ungroup() %>% select(ZM, `1995`, `2020`, cagr) %>% rename(city = ZM, `1990` = `1995`) %>% mutate(country = "Mexico")) %>%
+    ggplot(aes(x=`1990` / 1e6, y=cagr, label=city, alpha=country)) +
+    geom_point() +
+    geom_point(data = . %>% filter(city == "Hermosillo"), color="red", size=2) +
+    geom_text_repel() +
+    scale_x_continuous(labels = scales::comma) +
+    scale_y_continuous(labels = scales::percent) +
+    scale_alpha_manual(values=c(1.0, 0.3)) +
+    labs(
+         title = "Countries' Largest Cities by Population Growth",
+         y = "CAGR 1990-2020",
+         x = "Population in 2020 (Millions)"
+    ) +
+    theme(legend.position = "none")
+
+ggsave("imgs/cagr-pop-comparison.png", height=8, width=12)
+
+# usa_cagrs %>%
+#     select(city, `1990`, `2020`, cagr) %>%
+
+msa_cagrs %>%
+    rename(
+           city = msa_name_short,
+           `1990` = pop_1990,
+           `2020` = pop_2020
+    ) %>%
+    select(city, `1990`, `2020`, cagr) %>%
+    mutate(country = "USA") %>%
+    arrange(-`2020`) %>%
+    head(40) %>%
+    rbind(mexico_cagrs %>% filter(ZM %in% tippy) %>% ungroup() %>% select(ZM, `1995`, `2020`, cagr) %>% rename(city = ZM, `1990` = `1995`) %>% mutate(country = "Mexico")) %>%
+    filter(!(city %in% c("Valle de Mexico", "New York"))) %>%
+    ggplot(aes(x=`1990` / 1e6, y=cagr, label=city, alpha=country)) +
+    geom_point() +
+    geom_point(data = . %>% filter(city == "Hermosillo"), color="red", size=2) +
+    geom_text_repel() +
+    scale_x_continuous(labels = scales::comma) +
+    scale_y_continuous(labels = scales::percent) +
+    scale_alpha_manual(values = c(1.0, 0.3)) +
+    labs(
+         title = "Countries' Largest Cities by Population Growth",
+         y = "CAGR 1990-2020",
+         x = "Population in 2020 (Millions)"
+    ) +
+    theme(legend.position = "none")
+
+ggsave("imgs/cagr-msa-pop-comparison-drop-big.png", height=12, width=19)
+
+
+msa_cagrs %>%
+    rename(
+           city = msa_name,
+           `1990` = pop_1990,
+           `2020` = pop_2020
+    ) %>%
+    select(city, `1990`, `2020`, cagr) %>%
+    mutate(country = "USA") %>%
+    arrange(-`2020`) %>%
+    head(80) %>%
+    rbind(mexico_cagrs %>% filter(ZM %in% tippy) %>% ungroup() %>% select(ZM, `1995`, `2020`, cagr) %>% rename(city = ZM, `1990` = `1995`) %>% mutate(country = "Mexico")) %>%
+    filter(!(city %in% c("Valle de Mexico", "New York"))) %>%
+    ggplot(aes(x=`1990` / 1e6, y=cagr, label=city, alpha=country)) +
+    geom_point() +
+    geom_point(data = . %>% filter(city == "Hermosillo"), color="red", size=2) +
+    geom_hline(yintercept=0, linetype="dashed") +
+    geom_text_repel() +
+    scale_alpha_manual(values = c(1.0, 0.4)) +
+    # geom_text_repel(data = . %>% filter(country == "Mexico")) +
+    # geom_text_repel(data = . %>% filter(country == "USA"), alpha=0.3) +
+    scale_x_continuous(labels = scales::comma, limits=c(0.3, 1.1)) +
+    scale_y_continuous(labels = scales::percent) +
+    labs(
+         title = "Countries' Largest Cities by Population Growth",
+         subtitle="Zoom: 500k - 1.1M Population",
+         y = "CAGR 1990-2020",
+         x = "Population in 1990/1995 (Millions)"
+    ) +
+    theme(legend.position = "none")
+
+ggsave("imgs/cagr-msa-pop-comparison-zoom.png", height=8, width=12)
+
+```
+
+---
+
+```{r}
+
+mexico_dist <- mexico_cagrs %>%
+    filter(ZM %in% tippy) %>%
+    summarise(
+              avg = mean(cagr),
+              mdn = median(cagr),
+              std = sd(cagr)
+    )
+
+usa_dist <- usa_cagrs %>%
+    arrange(-`2020`) %>%
+    head(40) %>%
+    summarise(
+              avg = mean(cagr),
+              mdn = median(cagr),
+              std = sd(cagr)
+    )
+
+msa_dist <- msa_cagrs %>%
+    arrange(-pop_1990) %>%
+    head(40) %>%
+    summarise(
+                avg = mean(cagr, na.rm = T),
+                mdn = median(cagr, na.rm = T),
+                std = sd(cagr, na.rm = T)
+    )
+
+# now we can center the distribution around the mean and measure cagr as a function of standard deviations from the mean
+
+mexico_cagrs <- mexico_cagrs %>%
+    mutate(
+           z = (cagr - mexico_dist$avg) / mexico_dist$std,
+           z2 = (cagr - mexico_dist$mdn) / mexico_dist$std
+    )
+
+usa_cagrs <- usa_cagrs %>%
+    mutate(
+           z = (cagr - usa_dist$avg) / usa_dist$std,
+           z2 = (cagr - usa_dist$mdn) / usa_dist$std
+    )
+
+msa_cagrs <- msa_cagrs %>%
+    mutate(
+           z = (cagr - msa_dist$avg) / msa_dist$std,
+           z2 = (cagr - msa_dist$mdn) / msa_dist$std
+    ) %>%
+    rename(
+           city = msa_name_short,
+           `1990` = pop_1990,
+           `2020` = pop_2020
+    ) 
+
+    msa_cagrs
+
+
+mexico_cagrs %>%
+    filter(ZM %in% tippy) %>%
+    rename(city = ZM) %>%
+    select(city, `1995`, `2020`, cagr, z) %>%
+    rename(`1990` = `1995`) %>%
+    mutate(country = "Mexico") %>%
+    #rbind(select(usa_cagrs, city, `1990`, `2020`, cagr, z) %>% arrange(-`2020`) %>% head(40) %>% mutate(country = "USA")) %>%
+    rbind(select(msa_cagrs, city, `1990`, `2020`, cagr, z) %>% arrange(-`2020`) %>% head(80) %>% mutate(country = "USA")) %>%
+    ggplot(aes(x=`1990` / 1e6, y=z, label=city, alpha=country)) +
+    geom_point() +
+    geom_point(data = . %>% filter(city == "Hermosillo"), color="red", size=2) +
+    geom_hline(yintercept=0, linetype="dashed") +
+    geom_text_repel() +
+    scale_alpha_manual(values = c(1.0, 0.3)) +
+    scale_x_continuous(labels = scales::comma, limits=c(0.4, 1.1)) +
+    labs(
+         title = "Countries' Largest Cities by Population Growth",
+         subtitle="Zoom: 500k - 1.1M Population",
+         y = "CAGR Z-Score (Standard Deviations from Mean)",
+         x = "Population in 1990 / 1995 (Millions)"
+    ) +
+    theme(legend.position = "none")
+
+ggsave("imgs/cagr-pop-comparisons-zoom-zscore-1995.png", height=8, width=12)
+
+mexico_cagrs %>%
+    filter(ZM %in% tippy) %>%
+    rename(city = ZM) %>%
+    select(city, `1995`, `2020`, cagr, z) %>%
+    rename(`1990` = `1995`) %>%
+    mutate(country = "Mexico") %>%
+    #rbind(select(usa_cagrs, city, `1990`, `2020`, cagr, z) %>% arrange(-`2020`) %>% head(40) %>% mutate(country = "USA")) %>%
+    rbind(select(msa_cagrs, city, `1990`, `2020`, cagr, z) %>% arrange(-`2020`) %>% head(80) %>% mutate(country = "USA")) %>%
+    ggplot(aes(x=`1990` / 1e6, y=z, label=city, alpha=country)) +
+    geom_point() +
+    geom_point(data = . %>% filter(city == "Hermosillo"), color="red", size=2) +
+    geom_hline(yintercept=0, linetype="dashed") +
+    geom_text_repel() +
+    scale_alpha_manual(values = c(1.0, 0.3)) +
+    scale_x_continuous(labels = scales::comma, limits=c(0.5, 1.2)) +
+    labs(
+         title = "Countries' Largest Cities by Population Growth",
+         subtitle="Zoom: 500k - 1.5M Population",
+         y = "CAGR Z-Score (Standard Deviations from Mean)",
+         x = "Population in 1990 / 1995 (Millions)"
+    ) +
+    theme(legend.position = "none")
+
+ggsave("imgs/cagr-pop-comparisons-zoom2-zscore-1995.png", height=8, width=12)
+
+```
+
+---
+
+```{r}
+
+mexico_cagrs
+
+mexico_cagrs %>%
+    filter(ZM %in% tippy) %>%
+    ggplot(aes(x=cagr)) +
+    geom_density() +
+    geom_vline(data = . %>% filter(ZM == "Hermosillo"), color="red", aes(xintercept = cagr)) +
+    geom_vline(xintercept = mexico_dist$avg, linetype="dashed") +
+    scale_x_continuous(labels = scales::percent, n.breaks=10) +
+    labs(
+         title = "Distribution of Population Growth Rates in Mexico",
+         x = "CAGR 1995-2020"
+    )
+
+ggsave("imgs/cagr-pop-mexico-dist.png", height=8, width=12)
+
+
+usa_cagrs %>%
+    ggplot(aes(x=cagr)) +
+    geom_density() +
+    geom_vline(xintercept = usa_dist$avg, linetype="dashed") +
+    scale_x_continuous(labels = scales::percent, n.breaks=10) +
+    labs(
+         title = "Distribution of City Population Growth Rates in USA",
+         x = "CAGR 1990-2020"
+    )
+
+ggsave("imgs/cagr-pop-usa-dist.png", height=8, width=12)
+
+mean(msa_cagrs$cagr)
+
+msa_cagrs %>%
+    ggplot(aes(x=cagr)) +
+    geom_density() +
+    geom_vline(xintercept = mean(msa_cagrs$cagr, na.rm=T), linetype="dashed") +
+    scale_x_continuous(labels = scales::percent, n.breaks=10) +
+    labs(
+         title = "Distribution of MSA Population Growth Rates in USA",
+         x = "CAGR 1990-2020"
+    )
+
+ggsave('imgs/cagr-pop-msa-dist.png', height=8, width=12)
+
+```
+
+---
+
+
+```{r}
+
+pop_zones %>%
+    filter(ZM %in% tippy) %>%
+    group_by(codeZM, ZM, año) %>%
+    summarise(
+              pop = sum(valor, na.rm = T)
+    ) %>%
+    mutate(ZM = ifelse(ZM == "San Luis Potos\xed-Soledad", "San Luis Potos-Soledad", ZM)) %>%
+    mutate(codeZM = as.factor(codeZM)) %>%
+    pivot_wider(names_from="año", values_from="pop") %>%
+    mutate(
+           cagr = (`2020` / `1995`) ^ (1 / 25) - 1
+    ) %>%
+    filter(
+           ZM != "Valle de Mexico"
+    ) %>%
+    ggplot(aes(x=`1995` / 1e6, y=`cagr`, label=ZM)) +
+    geom_point() +
+    geom_text_repel() +
+    geom_point(data = . %>% filter(ZM == "Hermosillo"), color="red", size=2) +
+    labs(
+         title = "Population Growth and Size of Commuting Zones in Mexico",
+         x = "Population in 1995 (Millions)",
+         y = "CAGR 1995-2020"
+    ) +
+    scale_x_continuous(labels = scales::comma) +
+    scale_y_continuous(labels = scales::percent)
+
+    ggsave("imgs/pop-zone-cagr-no-mc.png", height=8, width=12)
+
+```
+
+---
+
+```{r}
 
 ```
 

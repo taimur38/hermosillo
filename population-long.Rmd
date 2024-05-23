@@ -1,0 +1,316 @@
+---
+title: "Population Long Term"
+author: "Taimur Shah"
+output:
+    pdf_document: beamer_presentation 
+    html_document: default
+classoption: "aspectratio=169"
+
+---
+
+```{r setup, message=FALSE, results='hide', echo=FALSE}
+
+knitr::opts_chunk$set(echo = FALSE)
+knitr::opts_chunk$set(warning = FALSE, message=FALSE)
+
+knitr::opts_chunk$set(fig.width=16, fig.height=9)
+
+library(tidyverse)
+library(ggthemes)
+library(ggrepel)
+library(plotly)
+library(haven)
+library(broom)
+
+library(knitr)
+library(kableExtra)
+
+theme_set(theme_few())
+
+mexico_municipalitydat <- read_csv("data/Population by state and municipality/conjunto_de_datos/cpv_valor_00.csv")
+
+
+zones <- read_dta("data/zonamet_expanded.dta")
+
+mex_state_pops <- mexico_municipalitydat %>%
+    filter(indicador == "Población total") %>%
+    filter(desc_municipio == 'Estatal') %>%
+    mutate(valor = as.numeric(valor)) 
+
+combined_state_capitals <- read_csv('data/long_state_capitals.csv')
+
+capitals <- combined_state_capitals %>%
+    filter(year == 1940) %>%
+    select(codeZM) %>% unique()
+
+# also get tijuana and juarez in here. 
+# is there a HMO that didnt receive ford?
+# can we track the sonoran cities in 1970 and see divergence
+
+```
+
+
+---
+
+
+```{r}
+
+mex_state_pops %>%
+    ggplot(aes(x=año, y=valor, color=desc_entidad)) +
+    geom_point() +
+    geom_line() +
+    geom_line(data = . %>% filter(desc_entidad == "Sonora"), color='red', size=3) +
+    geom_text_repel(
+                    data = . %>% 
+                        filter(año == 2020) %>% 
+                        filter(desc_municipio != "Hermosillo"), 
+                    aes(
+                       label = paste(desc_entidad, sep=", ")
+                    ), 
+                    hjust="left", 
+                    nudge_x = 2,
+                    xlim = c(2020, 2030)
+    ) +
+    labs(
+         title = "Population of Mexican States",
+         subtitle = "Sonora Highlighted",
+         x = "Year",
+         y = "Population"
+    ) +
+    scale_x_continuous(limits=c(1920, 2030), n.breaks = 8) +
+    scale_y_continuous(labels = scales::comma) +
+    theme(legend.position = "none") 
+
+```
+
+---
+
+```{r}
+
+state_cagrs <- mex_state_pops %>%
+    filter((año == 1910) | (año == 2020)) %>%
+    select(desc_entidad, valor, año) %>%
+    pivot_wider(names_from = año, values_from = valor) %>%
+    mutate(
+        growth = (`2020` - `1910`) / `1910`,
+        cagr = (1 + growth) ^ (1 / 110) - 1
+    ) 
+
+state_cagrs %>%
+    ggplot(aes(x=`1910`, y=cagr, label=desc_entidad)) +
+    geom_point() +
+    geom_point(data = . %>% filter(desc_entidad == "Sonora"), color='red', size=3) +
+    geom_text_repel() +
+    scale_x_continuous(labels = scales::comma) +
+    scale_y_continuous(labels = scales::percent) +
+    labs(
+         title = "CAGR of Mexican States",
+         subtitle = "1910-2020",
+         x = "Population in 1910",
+         y = "CAGR"
+    ) 
+
+```
+
+---
+
+```{r}
+
+# actually would be good to compute multiple cagrs.
+# using 20 year time periods
+
+lag_l <- 1
+
+multi_cagr_states <- mex_state_pops %>%
+    filter((año %% 10 ) %in% c(0, 1)) %>%
+    select(desc_entidad, valor, año) %>%
+    group_by(desc_entidad) %>%
+    arrange(año) %>%
+    mutate(
+        base_year = lag(año, lag_l),
+        base_pop = lag(valor, lag_l),
+        time_diff = año - base_year,
+        growth = (valor - lag(valor, lag_l)) / lag(valor, lag_l),
+        cagr = (1 + growth) ^ (1 / time_diff) - 1
+    ) %>%
+    ungroup() 
+
+lag_l <- 2
+multi_cagr_states_20 <- mex_state_pops %>%
+    filter((año %% 10 ) %in% c(0, 1)) %>%
+    select(desc_entidad, valor, año) %>%
+    group_by(desc_entidad) %>%
+    arrange(año) %>%
+    mutate(
+        base_year = lag(año, lag_l),
+        base_pop = lag(valor, lag_l),
+        time_diff = año - base_year,
+        growth = (valor - lag(valor, lag_l)) / lag(valor, lag_l),
+        cagr = (1 + growth) ^ (1 / time_diff) - 1
+    ) %>%
+    ungroup() 
+
+
+# so i want to see from 1940 - 2020 the success cagrs
+multi_cagr_states_20 %>%
+    filter(base_year %in% c(1921, seq(1940, 2020, 20))) %>%
+    mutate(
+           time_period = paste(base_year, año, sep="-")
+    ) %>%
+    ggplot(aes(x=log10(base_pop), y=cagr, label=desc_entidad)) +
+    geom_point() +
+    geom_point(data = . %>% filter(desc_entidad == "Sonora"), color='red', size=3) +
+    geom_text_repel() +
+    scale_x_continuous(labels = scales::comma) +
+    scale_y_continuous(labels = scales::percent) +
+    labs(
+         title = "Population Growth Rates of Mexican States over 20 Year Periods",
+         subtitle = "1921-2020",
+         x = "Log of Population in Base Year",
+         y = "CAGR"
+    ) +
+    facet_wrap(~time_period, scales = "free") 
+
+ggsave('imgs/states_point_pop_growth.png', width=16, height=9)
+
+```
+
+---
+
+```{r}
+
+multi_cagr_states %>%
+    filter(año %in% seq(1940, 2020, 20)) %>%
+    ggplot(aes(x=año, y=cagr, color=desc_entidad, label=desc_entidad)) +
+    geom_point() +
+    geom_line() +
+    geom_line(data = . %>% filter(desc_entidad == "Sonora"), color='red', size=3) +
+    scale_y_continuous(labels = scales::percent) +
+    scale_x_continuous(limits = c(1940, 2040)) +
+    geom_text_repel(
+                    data = . %>% 
+                        filter(año == 2020) %>% 
+                        filter(desc_entidad != "Sonora"), 
+                    aes(
+                       label = desc_entidad
+                    ), 
+                    hjust="left", 
+                    nudge_x = 2,
+                    xlim = c(2020, 2040)
+    ) 
+
+
+```
+
+---
+
+```{r}
+
+m_bases <- multi_cagr_states %>%
+    select(año, base_year) %>% unique()
+
+# multi_cagr_states %>%
+#     filter(!is.na(base_year)) %>%
+#     mutate(
+#         time_period = paste(base_year, año, sep="-")
+#     ) %>%
+#     group_by(time_period) %>%
+#     summarise(
+#         cagr = weighted.mean(cagr, base_pop, na.rm = T)
+#     ) 
+
+multi_cagr_states %>%
+    #filter(año %in% seq(1940, 2020, 20)) %>%
+    filter(!is.na(cagr)) %>%
+    ggplot(aes(x=año, y=cagr, color=desc_entidad, label=desc_entidad)) +
+    geom_boxplot(aes(group=año)) +
+    #geom_line(data = . %>% filter(desc_entidad == "Sonora"), color='red', size=1) +
+    geom_point(data = . %>% filter(desc_entidad == "Sonora"), color='red', size=3) +
+    scale_x_continuous(
+                       breaks = m_bases$año,
+                       labels = paste0(m_bases$base_year, "-", m_bases$año),
+                       n.breaks = nrow(m_bases)
+    ) +
+    scale_y_continuous(labels = scales::percent) +
+    labs(
+         title = "Population Growth Rates of Mexican States over 20 Year Periods",
+         subtitle = "Sonora Highlighted",
+         x = "Year",
+         y = "CAGR"
+    )
+
+ggsave('imgs/states_pop_growth.png', width=12, height=12)
+
+```
+
+---
+
+```{r}
+
+multi_cagr_states_20 %>%
+    filter(base_year %in% c(1921, seq(1940, 2020, 20))) %>%
+    filter(base_year == 2000) %>%
+    mutate(
+           time_period = paste(base_year, año, sep="-")
+    ) %>%
+    ggplot(aes(x=log10(base_pop), y=cagr, label=desc_entidad)) +
+    geom_point() +
+    geom_text_repel() +
+    geom_point(data = . %>% filter(desc_entidad == "Sonora"), color='red', size=3) +
+    labs(
+         title = "Population Growth Rates of Mexican States over 20 Year Periods",
+         subtitle = "2000 - 2020",
+         y = "CAGR",
+         x = "Log of Population in 2000"
+    ) +
+    scale_y_continuous(labels = scales::percent) 
+
+ggsave("imgs/states_pop_growth_2000.png", width=12, height=12)
+
+
+```
+
+---
+
+```{r}
+
+combined_state_capitals %>%
+    filter(codeZM %in% capitals$codeZM) %>%
+    mutate(year = as.numeric(year)) %>%
+    filter((year <= 1995) | (year %% 10 == 0)) %>%
+    group_by(ZM) %>%
+    arrange(year) %>%
+    mutate(
+           base_year = lag(year),
+           time_period = paste0(base_year, '-', year),
+           time_change = year - lag(year),
+           pop_change = pop - lag(pop),
+           period_cagr = (pop/ lag(pop))^(1/time_change) - 1
+    ) %>%
+    ungroup() %>%
+    filter(!is.na(base_year)) %>%
+    filter(period_cagr > -1) %>%
+    ggplot(aes(x=time_period, y=period_cagr)) +
+    geom_boxplot(aes(group=time_period)) +
+    geom_point(data = . %>% filter(ZM == "Hermosillo"), color='red', size=3) +
+    geom_text_repel(
+                    data = . %>% filter(ZM == "Hermosillo"), 
+                    color='red',
+                    aes(label=paste0(round(period_cagr * 100), "%")),
+                    point.padding = 1,
+                    nudge_x = 0.2,
+                    nudge_y = 0.007 
+
+    ) +
+    scale_y_continuous(labels=scales::percent) +
+    labs(
+         title = "Hermosillo's Relative Population Growth Rate",
+         y = "Compound Annual Growth Rate over Period",
+         x = "Time Period",
+         caption = "Source: INEGI"
+    )
+
+ggsave('imgs/capital-cagr-boxplot.png', width=1200, height=800, dpi=125, units='px')
+
+```
+
